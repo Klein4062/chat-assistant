@@ -56,7 +56,7 @@ type UserStore struct {
 func newUserStore() *UserStore {
 	us := &UserStore{users: make(map[string]string)}
 	// Preload from MySQL or hardcoded initial user
-	// Klein4062 / Qwe@19980902 — bcrypt hash pre-generated
+	// Pre-generated bcrypt hash for initial user
 	us.users["Klein4062"] = "$2b$12$c.8cW/ZBKNpbcpfOYNg3E.5.yMdFf84.LmXd.qJ1WPVvrHFQvpxg6"
 	return us
 }
