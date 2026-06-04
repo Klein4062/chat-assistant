@@ -1,0 +1,8 @@
+# Binary
+chat-server
+
+# Screenshots
+*.png
+
+# OS
+.DS_Store
