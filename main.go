@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +50,177 @@ const (
 	sessionMaxAge   = 24 * time.Hour  // absolute max session lifetime
 	sessionIdleTimeout = 10 * time.Minute // idle timeout
 )
+
+// ─── DeepSeek API Types ─────────────────────────────────────────
+
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type ChatCompletionRequest struct {
+	Model    string        `json:"model"`
+	Messages []ChatMessage `json:"messages"`
+	Stream   bool          `json:"stream"`
+}
+
+type ChatCompletionChunk struct {
+	ID      string `json:"id"`
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+}
+
+// ─── Conversation Store ─────────────────────────────────────────
+
+type ConversationStore struct {
+	mu       sync.RWMutex
+	history  map[string][]ChatMessage // clientID → messages
+	maxTurns int                      // keep last N user+assistant turns
+}
+
+func newConversationStore() *ConversationStore {
+	return &ConversationStore{
+		history:  make(map[string][]ChatMessage),
+		maxTurns: 20,
+	}
+}
+
+func (cs *ConversationStore) Add(clientID, role, content string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	msgs := cs.history[clientID]
+	msgs = append(msgs, ChatMessage{Role: role, Content: content})
+	if len(msgs) > cs.maxTurns*2+1 { // system + N turns * 2
+		// Trim oldest user+assistant pair, keep system prompt
+		cut := len(msgs) - cs.maxTurns*2
+		if cut < 1 {
+			cut = 1
+		}
+		msgs = append(msgs[:1], msgs[cut:]...)
+	}
+	cs.history[clientID] = msgs
+}
+
+func (cs *ConversationStore) Get(clientID string) []ChatMessage {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	return cs.history[clientID]
+}
+
+func (cs *ConversationStore) Clear(clientID string) {
+	cs.mu.Lock()
+	delete(cs.history, clientID)
+	cs.mu.Unlock()
+}
+
+// ─── DeepSeek Client ────────────────────────────────────────────
+
+var (
+	deepseekAPIKey  string
+	deepseekBaseURL string
+	deepseekModel   string
+	systemPrompt    string
+)
+
+func initDeepSeek() {
+	deepseekAPIKey = os.Getenv("DEEPSEEK_API_KEY")
+	if deepseekAPIKey == "" {
+		log.Println("WARNING: DEEPSEEK_API_KEY not set, AI replies will fall back to echo")
+	}
+	deepseekBaseURL = os.Getenv("DEEPSEEK_BASE_URL")
+	if deepseekBaseURL == "" {
+		deepseekBaseURL = "https://api.deepseek.com"
+	}
+	deepseekModel = os.Getenv("DEEPSEEK_MODEL")
+	if deepseekModel == "" {
+		deepseekModel = "deepseek-chat"
+	}
+	systemPrompt = `你是 AI 助手，一个有帮助、友好的智能助理。请用简洁清晰的中文回答问题。`
+}
+
+func callDeepSeekStream(history []ChatMessage, sendChunk func(string) error) error {
+	if deepseekAPIKey == "" {
+		sendChunk("（AI 服务未配置 — 请设置 DEEPSEEK_API_KEY）")
+		return nil
+	}
+
+	messages := append([]ChatMessage{{Role: "system", Content: systemPrompt}}, history...)
+	reqBody := ChatCompletionRequest{
+		Model:    deepseekModel,
+		Messages: messages,
+		Stream:   true,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest("POST", deepseekBaseURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+deepseekAPIKey)
+
+	client := &http.Client{Timeout: 2 * time.Minute}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("API call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse SSE stream
+	reader := bufio.NewReader(resp.Body)
+	fullContent := ""
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("read stream: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk ChatCompletionChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue // skip malformed chunks
+		}
+
+		for _, choice := range chunk.Choices {
+			content := choice.Delta.Content
+			if content != "" {
+				fullContent += content
+				if err := sendChunk(content); err != nil {
+					return fmt.Errorf("send chunk: %w", err)
+				}
+			}
+		}
+	}
+
+	if fullContent == "" {
+		sendChunk("（AI 返回了空响应，请稍后重试）")
+	}
+	return nil
+}
 
 // ─── In-Memory User Store ──────────────────────────────────────
 
@@ -207,9 +383,10 @@ func (h *Hub) run() {
 // ─── App State ─────────────────────────────────────────────────
 
 type App struct {
-	hub      *Hub
-	users    *UserStore
-	sessions *SessionStore
+	hub          *Hub
+	users        *UserStore
+	sessions     *SessionStore
+	conversations *ConversationStore
 }
 
 var upgrader = websocket.Upgrader{
@@ -372,6 +549,7 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer func() {
 			app.hub.unregister <- client
+			app.conversations.Clear(client.ID)
 			conn.Close()
 		}()
 
@@ -386,15 +564,67 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			msg.Timestamp = time.Now().UTC().Format(time.RFC3339)
-			msg.Sender = "server"
-			msg.Username = client.Username
+			userContent := msg.Content
 
-			// AI integration point — currently echo
-			msg.Content = "Echo: " + msg.Content
+			// Save user message to conversation history
+			app.conversations.Add(client.ID, "user", userContent)
 
-			response, _ := json.Marshal(msg)
-			app.hub.broadcast <- response
+			// Send stream_start to indicate AI is thinking
+			startMsg, _ := json.Marshal(Message{
+				Type:     "stream_start",
+				Sender:   "server",
+				Username: "AI",
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			})
+			client.Send <- startMsg
+
+			// Call DeepSeek API with streaming
+			history := app.conversations.Get(client.ID)
+			var aiContent string
+
+			err = callDeepSeekStream(history, func(chunk string) error {
+				aiContent += chunk
+				chunkMsg, _ := json.Marshal(Message{
+					Type:      "stream_chunk",
+					Content:   chunk,
+					Sender:    "server",
+					Username:  "AI",
+					Timestamp: time.Now().UTC().Format(time.RFC3339),
+				})
+				select {
+				case client.Send <- chunkMsg:
+				default:
+				}
+				return nil
+			})
+
+			if err != nil {
+				log.Printf("DeepSeek API error for %s: %v", client.Username, err)
+				errMsg, _ := json.Marshal(Message{
+					Type:      "stream_chunk",
+					Content:   fmt.Sprintf("抱歉，AI 服务暂时不可用：%v", err),
+					Sender:    "server",
+					Username:  "AI",
+					Timestamp: time.Now().UTC().Format(time.RFC3339),
+				})
+				client.Send <- errMsg
+				aiContent = fmt.Sprintf("[错误] %v", err)
+			}
+
+			// Save AI response to history
+			if aiContent != "" {
+				app.conversations.Add(client.ID, "assistant", aiContent)
+			}
+
+			// Send stream_end
+			endMsg, _ := json.Marshal(Message{
+				Type:      "stream_end",
+				Content:   aiContent,
+				Sender:    "server",
+				Username:  "AI",
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			})
+			client.Send <- endMsg
 		}
 	}()
 }
@@ -430,10 +660,13 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 // ─── Main ─────────────────────────────────────────────────────
 
 func main() {
+	initDeepSeek()
+
 	app := &App{
-		hub:      newHub(),
-		users:    newUserStore(),
-		sessions: newSessionStore(),
+		hub:           newHub(),
+		users:         newUserStore(),
+		sessions:      newSessionStore(),
+		conversations: newConversationStore(),
 	}
 	go app.hub.run()
 

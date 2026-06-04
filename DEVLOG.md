@@ -262,11 +262,58 @@ authMiddleware 拦截 → 删除 Session → 302 /login?expired=1
 - ✅ 登录页显示"会话已过期，请重新登录"
 - ✅ Playwright E2E 全流程通过
 
+### 2026-06-05 — DeepSeek V4 Pro API 接入
+
+**新增功能:**
+- 接入 DeepSeek API（OpenAI 兼容接口），替代 Echo 回显
+- 流式响应支持（SSE 解析 + WebSocket 推送 `stream_chunk`）
+- 前端流式渲染：AI 回复逐字显示 + 闪烁光标动画
+- 对话历史管理（每个 WebSocket 客户端独立上下文，保留最近 20 轮）
+- 系统 Prompt 可配置
+- 模型名称可配置（默认 `deepseek-chat`）
+
+**数据流:**
+
+```
+用户输入 → WebSocket → Go Server → DeepSeek API (stream=true)
+                                              ↓
+                                        SSE: data: {"choices":[{"delta":{"content":"你"}}]}
+                                              ↓
+                              Go 解析 → stream_chunk → WebSocket → 前端逐字渲染
+                                              ↓
+                                        SSE: data: [DONE]
+                                              ↓
+                              Go → stream_end → 前端定格 AI 气泡
+```
+
+**配置:**
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `DEEPSEEK_API_KEY` | (必填) | DeepSeek API 密钥 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 地址 |
+| `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名称 |
+
+密钥存储在 `/opt/chat-assistant/.env`（权限 600），systemd 通过 `EnvironmentFile` 读取。
+
+**前端新增:**
+- `stream_start` → 显示打字指示器（三个跳动圆点）
+- `stream_chunk` → 递增填充 AI 气泡 + 闪烁光标 `▊`
+- `stream_end` → 光标消失，添加时间戳
+- 新增 CSS 动画：`blink`（光标闪烁）、`typing`（三点跳动）
+
+**验证结果:**
+- ✅ "你好，介绍一下自己" → AI: "你好！我是AI助手，友好且乐于助人..."
+- ✅ 流式响应逐字渲染
+- ✅ 对话上下文保持（多轮对话）
+- ✅ API Key 通过 .env 文件安全注入
+- ✅ Playwright E2E 截图: `screenshot-ai.png`
+
 ## 当前功能
 
 - [x] 多客户端 WebSocket 实时通信
 - [x] 消息广播（所有连接客户端可见）
-- [x] 服务端 Echo 回显
+- [x] ~~服务端 Echo 回显~~ → DeepSeek V4 Pro AI 对话
 - [x] 连接状态指示器
 - [x] 自动重连（指数退避，最大 30s）
 - [x] 响应式设计（移动端适配）

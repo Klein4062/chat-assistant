@@ -4,5 +4,8 @@ chat-server
 # Screenshots
 *.png
 
+# Secrets
+.env
+
 # OS
 .DS_Store

@@ -366,6 +366,30 @@ html, body {
     font-size: 16px;
 }
 
+/* Streaming Bubble */
+.streaming-bubble::after {
+    content: '▊';
+    animation: blink 1s step-end infinite;
+    color: var(--accent);
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+
+.content-wrapper {
+    display: flex;
+    flex-direction: column;
+}
+
+.message-username {
+    font-size: 11px;
+    color: var(--accent);
+    margin-bottom: 2px;
+    padding: 0 4px;
+}
+
 /* Responsive */
 @media (max-width: 600px) {
     .chat-header {

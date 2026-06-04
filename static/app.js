@@ -113,11 +113,99 @@
 
     // ─── Message Handling ──────────────────────────────────────
 
+    let streamBubble = null;     // The bubble being built during streaming
+    let streamContent = '';      // Accumulated content
+
     function handleMessage(msg) {
-        if (msg.type === 'message') {
-            removeWelcome();
-            const sender = msg.username === currentUsername ? 'user-self' : 'server';
-            addMessageBubble(msg.content, sender, msg.username, msg.timestamp);
+        switch (msg.type) {
+            case 'message':
+                removeWelcome();
+                const sender = msg.username === currentUsername ? 'user-self' : 'server';
+                addMessageBubble(msg.content, sender, msg.username, msg.timestamp);
+                break;
+
+            case 'stream_start':
+                removeWelcome();
+                showTypingIndicator();
+                streamContent = '';
+                break;
+
+            case 'stream_chunk':
+                hideTypingIndicator();
+                streamContent += msg.content;
+                if (!streamBubble) {
+                    streamBubble = addStreamingBubble();
+                }
+                updateStreamingBubble(streamBubble, streamContent);
+                break;
+
+            case 'stream_end':
+                hideTypingIndicator();
+                if (streamBubble) {
+                    finalizeStreamingBubble(streamBubble, streamContent, msg.timestamp);
+                    streamBubble = null;
+                    streamContent = '';
+                } else if (msg.content) {
+                    addMessageBubble(msg.content, 'server', 'AI', msg.timestamp);
+                }
+                break;
+        }
+    }
+
+    function showTypingIndicator() {
+        const existing = document.querySelector('.typing-row');
+        if (existing) return;
+        const row = document.createElement('div');
+        row.className = 'message-row server typing-row';
+        row.innerHTML = `
+            <div class="message-avatar">🤖</div>
+            <div class="message-bubble typing-indicator">
+                <span></span><span></span><span></span>
+            </div>
+        `;
+        messagesContainer.appendChild(row);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    function hideTypingIndicator() {
+        const row = document.querySelector('.typing-row');
+        if (row) row.remove();
+    }
+
+    function addStreamingBubble() {
+        const row = document.createElement('div');
+        row.className = 'message-row server streaming-row';
+        row.innerHTML = `
+            <div class="message-avatar">🤖</div>
+            <div class="content-wrapper">
+                <div class="message-username">AI</div>
+                <div class="message-bubble streaming-bubble"></div>
+            </div>
+        `;
+        messagesContainer.appendChild(row);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        return row;
+    }
+
+    function updateStreamingBubble(row, content) {
+        const bubble = row.querySelector('.streaming-bubble');
+        if (bubble) {
+            bubble.textContent = content;
+        }
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    function finalizeStreamingBubble(row, content, timestamp) {
+        const bubble = row.querySelector('.streaming-bubble');
+        if (bubble) {
+            bubble.classList.remove('streaming-bubble');
+        }
+        // Add timestamp
+        if (timestamp) {
+            const time = document.createElement('div');
+            time.className = 'message-time';
+            time.textContent = formatTime(timestamp);
+            row.querySelector('.content-wrapper').appendChild(time);
         }
     }
 

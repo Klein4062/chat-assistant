@@ -1,13 +1,13 @@
 # Chat Assistant — AI 助手
 
-基于 Go 的实时聊天应用，支持 WebSocket 通信、用户认证和会话管理，最终目标为接入 LLM 的 AI 助手。
+基于 Go 的 AI 聊天应用，支持 WebSocket 实时通信、DeepSeek V4 Pro 流式对话、用户认证和会话超时管理。
 
 ## 架构
 
 ```
 浏览器 ──▶ Caddy (:80) ──▶ Go Server (:8080) ──▶ MySQL (127.0.0.1:3306)
-  │                           │
-  └── WebSocket ──────────────┘
+  │                           │    │
+  └── WebSocket ──────────────┘    └── DeepSeek API (stream)
 ```
 
 ## 技术栈
@@ -15,6 +15,7 @@
 | 层级 | 技术 |
 |------|------|
 | 后端 | Go 1.25, gorilla/websocket |
+| AI | DeepSeek V4 Pro（OpenAI 兼容接口，SSE 流式） |
 | 前端 | 原生 HTML/CSS/JS（零依赖） |
 | 数据库 | MySQL 8.4 |
 | 反代 | Caddy v2 |
@@ -23,11 +24,13 @@
 
 ## 功能
 
-- [x] WebSocket 实时聊天（多客户端广播）
+- [x] **DeepSeek V4 Pro AI 对话**，流式逐字输出
+- [x] 对话上下文管理（最近 20 轮）
+- [x] WebSocket 实时通信（多客户端广播）
 - [x] 用户登录/登出（bcrypt 密码哈希）
-- [x] **10 分钟无操作自动退出**（会话超时 + 前端警告）
+- [x] **10 分钟无操作自动退出**（会话超时 + 前端警告条）
 - [x] 未登录自动重定向登录页
-- [x] 消息 Echo 回显（AI 接口预留）
+- [x] 流式渲染动画（打字指示器 + 闪烁光标）
 - [x] 自动重连（指数退避）
 - [x] 深色主题 + 响应式布局
 - [x] systemd 守护 + 开机自启
@@ -47,6 +50,9 @@ apt-get install -y caddy mysql-server
 ### 本地开发
 
 ```bash
+# 设置 DeepSeek API Key
+export DEEPSEEK_API_KEY=sk-xxxxxxxx
+
 go mod tidy
 go run .
 # 访问 http://localhost:8080
@@ -55,12 +61,11 @@ go run .
 ### 部署到服务器
 
 ```bash
-# 设置环境变量
-export DEPLOY_HOST=47.95.244.175
+export DEPLOY_HOST=<your-server>
 export DEPLOY_USER=root
 export DEPLOY_PASS='<server-password>'
 
-# 一键构建 + 部署 + 冒烟测试
+# 一键构建 + 部署 + 测试
 bash .claude/skills/run-chat-assistant/smoke.sh
 ```
 
@@ -77,12 +82,12 @@ ssh root@<host> 'systemctl restart chat-assistant'
 
 ```
 chat-assistant/
-├── main.go              # Go 后端（HTTP + WebSocket + Auth）
+├── main.go              # Go 后端（HTTP + WebSocket + Auth + DeepSeek）
 ├── go.mod / go.sum
 ├── static/
 │   ├── index.html       # 聊天页面
-│   ├── style.css        # 聊天样式
-│   ├── app.js           # 聊天逻辑 + 空闲检测
+│   ├── style.css        # 聊天样式 + 流式动画
+│   ├── app.js           # 聊天逻辑 + 流式渲染 + 空闲检测
 │   ├── login.html       # 登录页面
 │   ├── login.css        # 登录样式
 │   └── login.js         # 登录逻辑
@@ -102,16 +107,39 @@ chat-assistant/
 | GET | `/login` | 公开 | 登录页面 |
 | POST | `/api/login` | 公开 | 登录 `{username, password}` |
 | POST | `/api/logout` | 公开 | 退出登录 |
-| GET | `/api/session` | 公开 | 会话状态 + 剩余时间 |
-| GET | `/ws` | 需要 | WebSocket 连接 |
+| GET | `/api/session` | 公开 | 会话状态 + 剩余秒数 |
+| GET | `/ws` | 需要 | WebSocket（含 AI 流式消息） |
 | GET | `/health` | 公开 | 健康检查 |
+
+## WebSocket 消息协议
+
+```json
+// 客户端 → 服务端
+{"type": "message", "content": "你好"}
+
+// 服务端 → 客户端（流式 AI 回复）
+{"type": "stream_start"}                          // 开始生成
+{"type": "stream_chunk", "content": "你"}         // 逐 chunk 推送
+{"type": "stream_chunk", "content": "好！"}
+{"type": "stream_end", "content": "你好！完整内容"} // 生成完毕
+```
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DEEPSEEK_API_KEY` | (必填) | DeepSeek API 密钥 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 地址 |
+| `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名称 |
+
+密钥存储在服务器 `/opt/chat-assistant/.env`（权限 600），systemd 通过 `EnvironmentFile` 注入。
 
 ## 会话超时
 
 - 10 分钟无 HTTP 请求 → Session 自动过期
 - 前端每 60 秒轮询 `/api/session` 续期
-- 剩余 ≤60 秒时显示橙色警告条
-- 过期后重定向 `/login?expired=1`
+- 剩余 ≤60 秒时显示橙色警告条 `⏳ 会话即将过期`
+- 过期后重定向 `/login?expired=1`，页面提示"会话已过期，请重新登录"
 
 ## 维护
 
@@ -128,9 +156,9 @@ systemctl restart chat-assistant
 
 ## 开发计划
 
-- [ ] 接入 DeepSeek / Claude API
-- [ ] 流式 AI 回复
+- [x] 接入 DeepSeek API，流式对话
+- [ ] Markdown 渲染 + 代码高亮
 - [ ] 多会话管理
-- [ ] Markdown + 代码高亮
 - [ ] HTTPS + 域名绑定
 - [ ] Docker 化
+- [ ] 多模型切换（Claude, GPT 等）
