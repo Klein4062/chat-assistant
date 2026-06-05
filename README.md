@@ -25,13 +25,16 @@
 ## 功能
 
 - [x] **DeepSeek V4 Pro AI 对话**，流式逐字输出
-- [x] 对话上下文管理（最近 20 轮）
-- [x] WebSocket 实时通信（多客户端广播）
+- [x] **多会话管理**：最多 3 个，MySQL 持久化，登出/重登不丢失，切换/重命名/删除
+- [x] 对话上下文管理（每会话独立，最近 20 轮）
+- [x] WebSocket 实时通信（多客户端广播）+ 30s Ping 保活
 - [x] 用户登录/登出（bcrypt 密码哈希）
 - [x] **10 分钟无操作自动退出**（会话超时 + 前端警告条）
 - [x] 未登录自动重定向登录页
 - [x] 流式渲染动画（打字指示器 + 闪烁光标）
-- [x] 自动重连（指数退避）
+- [x] 断线自动重连 + **消息队列**（断开时消息暂存，重连后自动发送）
+- [x] 连接状态 Toast 通知（断线警告 + 重连成功）
+- [x] 自动重连（指数退避，断开时立即重连）
 - [x] 深色主题 + 响应式布局
 - [x] systemd 守护 + 开机自启
 
@@ -110,6 +113,11 @@ chat-assistant/
 | GET | `/api/session` | 公开 | 会话状态 + 剩余秒数 |
 | GET | `/ws` | 需要 | WebSocket（含 AI 流式消息） |
 | GET | `/health` | 公开 | 健康检查 |
+| GET | `/api/conversations` | 需要 | 列出用户会话 |
+| POST | `/api/conversations` | 需要 | 新建会话（最多 3 个） |
+| GET | `/api/conversations/{id}/messages` | 需要 | 加载历史消息 |
+| DELETE | `/api/conversations/{id}` | 需要 | 删除会话及消息 |
+| PUT | `/api/conversations/{id}` | 需要 | 重命名会话 |
 
 ## WebSocket 消息协议
 
@@ -131,8 +139,9 @@ chat-assistant/
 | `DEEPSEEK_API_KEY` | (必填) | DeepSeek API 密钥 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 地址 |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名称 |
+| `MYSQL_DSN` | (必填) | MySQL 连接串 `user:pass@tcp(127.0.0.1:3306)/chat_assistant?parseTime=true` |
 
-密钥存储在服务器 `/opt/chat-assistant/.env`（权限 600），systemd 通过 `EnvironmentFile` 注入。
+所有密钥存储在服务器 `/opt/chat-assistant/.env`（权限 600），systemd 通过 `EnvironmentFile` 注入。
 
 ## 会话超时
 

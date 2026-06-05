@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,10 +12,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -22,11 +25,12 @@ import (
 // ─── Data Types ────────────────────────────────────────────────
 
 type Message struct {
-	Type      string `json:"type"`
-	Content   string `json:"content,omitempty"`
-	Sender    string `json:"sender,omitempty"`
-	Username  string `json:"username,omitempty"`
-	Timestamp string `json:"timestamp,omitempty"`
+	Type           string `json:"type"`
+	Content        string `json:"content,omitempty"`
+	Sender         string `json:"sender,omitempty"`
+	Username       string `json:"username,omitempty"`
+	Timestamp      string `json:"timestamp,omitempty"`
+	ConversationID int64  `json:"conversation_id,omitempty"`
 }
 
 type LoginRequest struct {
@@ -47,9 +51,19 @@ type SessionResponse struct {
 }
 
 const (
-	sessionMaxAge   = 24 * time.Hour  // absolute max session lifetime
-	sessionIdleTimeout = 10 * time.Minute // idle timeout
+	sessionMaxAge      = 24 * time.Hour
+	sessionIdleTimeout = 10 * time.Minute
+	maxConversations   = 3
 )
+
+// ConversationInfo is returned in list API (lightweight, no messages)
+type ConversationInfo struct {
+	ID           int64     `json:"id"`
+	Title        string    `json:"title"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	MessageCount int       `json:"message_count"`
+}
 
 // ─── DeepSeek API Types ─────────────────────────────────────────
 
@@ -73,47 +87,205 @@ type ChatCompletionChunk struct {
 	} `json:"choices"`
 }
 
-// ─── Conversation Store ─────────────────────────────────────────
+// ─── Conversation Store (MySQL + Memory Cache) ──────────────────
 
 type ConversationStore struct {
 	mu       sync.RWMutex
-	history  map[string][]ChatMessage // clientID → messages
-	maxTurns int                      // keep last N user+assistant turns
+	cache    map[int64][]ChatMessage
+	maxTurns int
+	db       *sql.DB
 }
 
-func newConversationStore() *ConversationStore {
+func newConversationStore(db *sql.DB) *ConversationStore {
 	return &ConversationStore{
-		history:  make(map[string][]ChatMessage),
+		cache:    make(map[int64][]ChatMessage),
 		maxTurns: 20,
+		db:       db,
 	}
 }
 
-func (cs *ConversationStore) Add(clientID, role, content string) {
+func (cs *ConversationStore) AddMessage(convID int64, role, content string) error {
+	_, err := cs.db.Exec(
+		"INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+		convID, role, content,
+	)
+	if err != nil {
+		return fmt.Errorf("save message: %w", err)
+	}
+
 	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	msgs := cs.history[clientID]
+	msgs := cs.cache[convID]
 	msgs = append(msgs, ChatMessage{Role: role, Content: content})
-	if len(msgs) > cs.maxTurns*2+1 { // system + N turns * 2
-		// Trim oldest user+assistant pair, keep system prompt
+	if len(msgs) > cs.maxTurns*2+1 {
 		cut := len(msgs) - cs.maxTurns*2
 		if cut < 1 {
 			cut = 1
 		}
 		msgs = append(msgs[:1], msgs[cut:]...)
 	}
-	cs.history[clientID] = msgs
-}
-
-func (cs *ConversationStore) Get(clientID string) []ChatMessage {
-	cs.mu.RLock()
-	defer cs.mu.RUnlock()
-	return cs.history[clientID]
-}
-
-func (cs *ConversationStore) Clear(clientID string) {
-	cs.mu.Lock()
-	delete(cs.history, clientID)
+	cs.cache[convID] = msgs
 	cs.mu.Unlock()
+
+	cs.db.Exec("UPDATE conversations SET updated_at = NOW() WHERE id = ?", convID)
+	return nil
+}
+
+func (cs *ConversationStore) GetHistory(convID int64) ([]ChatMessage, error) {
+	cs.mu.RLock()
+	cached, ok := cs.cache[convID]
+	cs.mu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	rows, err := cs.db.Query(
+		`SELECT role, content FROM messages
+		 WHERE conversation_id = ?
+		 ORDER BY id DESC LIMIT ?`,
+		convID, cs.maxTurns*2,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load messages: %w", err)
+	}
+	defer rows.Close()
+
+	var msgs []ChatMessage
+	for rows.Next() {
+		var role, content string
+		if err := rows.Scan(&role, &content); err != nil {
+			continue
+		}
+		msgs = append(msgs, ChatMessage{Role: role, Content: content})
+	}
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+
+	cs.mu.Lock()
+	cs.cache[convID] = msgs
+	cs.mu.Unlock()
+	return msgs, nil
+}
+
+func (cs *ConversationStore) ClearCache(convID int64) {
+	cs.mu.Lock()
+	delete(cs.cache, convID)
+	cs.mu.Unlock()
+}
+
+// ─── Conversation DB Helpers ──────────────────────────────────────
+
+func (app *App) listConversations(username string) ([]ConversationInfo, error) {
+	rows, err := app.db.Query(
+		`SELECT c.id, c.title, c.created_at, c.updated_at,
+		        COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id), 0) as msg_count
+		 FROM conversations c
+		 WHERE c.username = ?
+		 ORDER BY c.updated_at DESC`,
+		username,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list conversations: %w", err)
+	}
+	defer rows.Close()
+
+	var list []ConversationInfo
+	for rows.Next() {
+		var ci ConversationInfo
+		if err := rows.Scan(&ci.ID, &ci.Title, &ci.CreatedAt, &ci.UpdatedAt, &ci.MessageCount); err != nil {
+			continue
+		}
+		list = append(list, ci)
+	}
+	if list == nil {
+		list = []ConversationInfo{}
+	}
+	return list, nil
+}
+
+func (app *App) createConversation(username, title string) (*ConversationInfo, error) {
+	var count int
+	if err := app.db.QueryRow(
+		"SELECT COUNT(*) FROM conversations WHERE username = ?", username,
+	).Scan(&count); err != nil {
+		return nil, fmt.Errorf("count conversations: %w", err)
+	}
+	if count >= maxConversations {
+		return nil, fmt.Errorf("已达到最大会话数上限（%d 个）", maxConversations)
+	}
+
+	if title == "" {
+		title = "新对话"
+	}
+
+	res, err := app.db.Exec(
+		"INSERT INTO conversations (username, title) VALUES (?, ?)",
+		username, title,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create conversation: %w", err)
+	}
+
+	id, _ := res.LastInsertId()
+	now := time.Now()
+	return &ConversationInfo{
+		ID:        id,
+		Title:     title,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil
+}
+
+func (app *App) deleteConversation(id int64, username string) error {
+	var owner string
+	if err := app.db.QueryRow(
+		"SELECT username FROM conversations WHERE id = ?", id,
+	).Scan(&owner); err != nil {
+		return fmt.Errorf("conversation not found: %w", err)
+	}
+	if owner != username {
+		return fmt.Errorf("permission denied")
+	}
+
+	if _, err := app.db.Exec("DELETE FROM conversations WHERE id = ?", id); err != nil {
+		return fmt.Errorf("delete conversation: %w", err)
+	}
+
+	app.conversations.ClearCache(id)
+	return nil
+}
+
+func (app *App) renameConversation(id int64, username, title string) error {
+	var owner string
+	if err := app.db.QueryRow(
+		"SELECT username FROM conversations WHERE id = ?", id,
+	).Scan(&owner); err != nil {
+		return fmt.Errorf("conversation not found: %w", err)
+	}
+	if owner != username {
+		return fmt.Errorf("permission denied")
+	}
+
+	if _, err := app.db.Exec(
+		"UPDATE conversations SET title = ? WHERE id = ?", title, id,
+	); err != nil {
+		return fmt.Errorf("rename conversation: %w", err)
+	}
+	return nil
+}
+
+func (app *App) loadMessages(convID int64, username string) ([]ChatMessage, error) {
+	var owner string
+	if err := app.db.QueryRow(
+		"SELECT username FROM conversations WHERE id = ?", convID,
+	).Scan(&owner); err != nil {
+		return nil, fmt.Errorf("conversation not found: %w", err)
+	}
+	if owner != username {
+		return nil, fmt.Errorf("permission denied")
+	}
+
+	return app.conversations.GetHistory(convID)
 }
 
 // ─── DeepSeek Client ────────────────────────────────────────────
@@ -178,7 +350,6 @@ func callDeepSeekStream(history []ChatMessage, sendChunk func(string) error) err
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse SSE stream
 	reader := bufio.NewReader(resp.Body)
 	fullContent := ""
 	for {
@@ -202,7 +373,7 @@ func callDeepSeekStream(history []ChatMessage, sendChunk func(string) error) err
 
 		var chunk ChatCompletionChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue // skip malformed chunks
+			continue
 		}
 
 		for _, choice := range chunk.Choices {
@@ -226,13 +397,11 @@ func callDeepSeekStream(history []ChatMessage, sendChunk func(string) error) err
 
 type UserStore struct {
 	mu    sync.RWMutex
-	users map[string]string // username → bcrypt hash
+	users map[string]string
 }
 
 func newUserStore() *UserStore {
 	us := &UserStore{users: make(map[string]string)}
-	// Preload from MySQL or hardcoded initial user
-	// Pre-generated bcrypt hash for initial user
 	us.users["Klein4062"] = "$2b$12$c.8cW/ZBKNpbcpfOYNg3E.5.yMdFf84.LmXd.qJ1WPVvrHFQvpxg6"
 	return us
 }
@@ -251,7 +420,7 @@ func (us *UserStore) Validate(username, password string) bool {
 
 type SessionStore struct {
 	mu       sync.RWMutex
-	sessions map[string]*Session // token → session
+	sessions map[string]*Session
 }
 
 type Session struct {
@@ -301,7 +470,6 @@ func (ss *SessionStore) Delete(token string) {
 	ss.mu.Unlock()
 }
 
-// Cleanup removes expired sessions (both idle and max-age). Runs periodically.
 func (ss *SessionStore) Cleanup() {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -383,10 +551,11 @@ func (h *Hub) run() {
 // ─── App State ─────────────────────────────────────────────────
 
 type App struct {
-	hub          *Hub
-	users        *UserStore
-	sessions     *SessionStore
+	hub           *Hub
+	users         *UserStore
+	sessions      *SessionStore
 	conversations *ConversationStore
+	db            *sql.DB
 }
 
 var upgrader = websocket.Upgrader{
@@ -404,7 +573,6 @@ func (app *App) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			if session != nil {
 				app.sessions.Delete(app.getSessionToken(r))
 			}
-			// For API calls, return 401. For page requests, redirect to /login.
 			if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws") {
 				http.Error(w, `{"error":"unauthorized","reason":"session_expired"}`, http.StatusUnauthorized)
 				return
@@ -412,7 +580,6 @@ func (app *App) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/login?expired=1", http.StatusFound)
 			return
 		}
-		// Refresh last activity time
 		app.sessions.Touch(app.getSessionToken(r))
 		next(w, r)
 	}
@@ -434,11 +601,18 @@ func (app *App) getSession(r *http.Request) *Session {
 	return app.sessions.Get(token)
 }
 
+func (app *App) getSessionUsername(r *http.Request) string {
+	session := app.getSession(r)
+	if session == nil {
+		return ""
+	}
+	return session.Username
+}
+
 // ─── Handlers ──────────────────────────────────────────────────
 
 func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		// Serve login page
 		http.ServeFile(w, r, "./static/login.html")
 		return
 	}
@@ -465,7 +639,7 @@ func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		MaxAge:   86400, // 24 hours
+		MaxAge:   86400,
 		SameSite: http.SameSiteLaxMode,
 	})
 	writeJSON(w, http.StatusOK, LoginResponse{Success: true, Token: token, Message: "登录成功"})
@@ -508,8 +682,121 @@ func (app *App) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ─── Conversation API Handlers ──────────────────────────────────
+
+func (app *App) handleListConversations(w http.ResponseWriter, r *http.Request) {
+	username := app.getSessionUsername(r)
+	if username == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	list, err := app.listConversations(username)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (app *App) handleCreateConversation(w http.ResponseWriter, r *http.Request) {
+	username := app.getSessionUsername(r)
+	if username == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		Title string `json:"title"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	conv, err := app.createConversation(username, req.Title)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, conv)
+	log.Printf("[%s] created conversation %d: %s", username, conv.ID, conv.Title)
+}
+
+func (app *App) handleConversationMessages(w http.ResponseWriter, r *http.Request) {
+	username := app.getSessionUsername(r)
+	if username == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	idStr := r.PathValue("id")
+	convID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid conversation id"})
+		return
+	}
+
+	msgs, err := app.loadMessages(convID, username)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	if msgs == nil {
+		msgs = []ChatMessage{}
+	}
+	writeJSON(w, http.StatusOK, msgs)
+}
+
+func (app *App) handleDeleteConversation(w http.ResponseWriter, r *http.Request) {
+	username := app.getSessionUsername(r)
+	if username == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	idStr := r.PathValue("id")
+	convID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid conversation id"})
+		return
+	}
+
+	if err := app.deleteConversation(convID, username); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	log.Printf("[%s] deleted conversation %d", username, convID)
+}
+
+func (app *App) handleRenameConversation(w http.ResponseWriter, r *http.Request) {
+	username := app.getSessionUsername(r)
+	if username == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	idStr := r.PathValue("id")
+	convID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid conversation id"})
+		return
+	}
+
+	var req struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Title == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title is required"})
+		return
+	}
+
+	if err := app.renameConversation(convID, username, req.Title); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "renamed"})
+}
+
 func (app *App) handleChat(w http.ResponseWriter, r *http.Request) {
-	// Auth already checked by authMiddleware
 	http.ServeFile(w, r, "./static/index.html")
 }
 
@@ -549,8 +836,25 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer func() {
 			app.hub.unregister <- client
-			app.conversations.Clear(client.ID)
 			conn.Close()
+		}()
+
+		pingDone := make(chan struct{})
+		defer close(pingDone)
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-pingDone:
+					return
+				case <-ticker.C:
+					conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+					if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+						return
+					}
+				}
+			}
 		}()
 
 		for {
@@ -564,32 +868,54 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			userContent := msg.Content
+			if msg.Type != "message" || msg.Content == "" {
+				continue
+			}
 
-			// Save user message to conversation history
-			app.conversations.Add(client.ID, "user", userContent)
+			convID := msg.ConversationID
+			if convID == 0 {
+				// Client must specify a conversation
+				errMsg, _ := json.Marshal(Message{
+					Type:    "error",
+					Content: "请先选择或创建一个会话",
+					Sender:  "server",
+				})
+				client.Send <- errMsg
+				continue
+			}
 
-			// Send stream_start to indicate AI is thinking
+			// Save user message to DB
+			if err := app.conversations.AddMessage(convID, "user", msg.Content); err != nil {
+				log.Printf("Failed to save user message: %v", err)
+			}
+
+			// Send stream_start
 			startMsg, _ := json.Marshal(Message{
-				Type:     "stream_start",
-				Sender:   "server",
-				Username: "AI",
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
+				Type:           "stream_start",
+				Sender:         "server",
+				Username:       "AI",
+				ConversationID: convID,
+				Timestamp:      time.Now().UTC().Format(time.RFC3339),
 			})
 			client.Send <- startMsg
 
-			// Call DeepSeek API with streaming
-			history := app.conversations.Get(client.ID)
-			var aiContent string
+			// Load history for AI context
+			history, err := app.conversations.GetHistory(convID)
+			if err != nil {
+				log.Printf("Failed to load history for conv %d: %v", convID, err)
+				history = nil
+			}
 
+			var aiContent string
 			err = callDeepSeekStream(history, func(chunk string) error {
 				aiContent += chunk
 				chunkMsg, _ := json.Marshal(Message{
-					Type:      "stream_chunk",
-					Content:   chunk,
-					Sender:    "server",
-					Username:  "AI",
-					Timestamp: time.Now().UTC().Format(time.RFC3339),
+					Type:           "stream_chunk",
+					Content:        chunk,
+					Sender:         "server",
+					Username:       "AI",
+					ConversationID: convID,
+					Timestamp:      time.Now().UTC().Format(time.RFC3339),
 				})
 				select {
 				case client.Send <- chunkMsg:
@@ -601,28 +927,32 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				log.Printf("DeepSeek API error for %s: %v", client.Username, err)
 				errMsg, _ := json.Marshal(Message{
-					Type:      "stream_chunk",
-					Content:   fmt.Sprintf("抱歉，AI 服务暂时不可用：%v", err),
-					Sender:    "server",
-					Username:  "AI",
-					Timestamp: time.Now().UTC().Format(time.RFC3339),
+					Type:           "stream_chunk",
+					Content:        fmt.Sprintf("抱歉，AI 服务暂时不可用：%v", err),
+					Sender:         "server",
+					Username:       "AI",
+					ConversationID: convID,
+					Timestamp:      time.Now().UTC().Format(time.RFC3339),
 				})
 				client.Send <- errMsg
 				aiContent = fmt.Sprintf("[错误] %v", err)
 			}
 
-			// Save AI response to history
+			// Save AI response to DB
 			if aiContent != "" {
-				app.conversations.Add(client.ID, "assistant", aiContent)
+				if err := app.conversations.AddMessage(convID, "assistant", aiContent); err != nil {
+					log.Printf("Failed to save AI response: %v", err)
+				}
 			}
 
 			// Send stream_end
 			endMsg, _ := json.Marshal(Message{
-				Type:      "stream_end",
-				Content:   aiContent,
-				Sender:    "server",
-				Username:  "AI",
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
+				Type:           "stream_end",
+				Content:        aiContent,
+				Sender:         "server",
+				Username:       "AI",
+				ConversationID: convID,
+				Timestamp:      time.Now().UTC().Format(time.RFC3339),
 			})
 			client.Send <- endMsg
 		}
@@ -634,13 +964,11 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 func (app *App) serveStatic(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
-	// Public files (login page assets, health)
 	if path == "/login.css" || path == "/login.js" || path == "/health" {
 		http.ServeFile(w, r, "./static"+path)
 		return
 	}
 
-	// Protected — require auth
 	session := app.getSession(r)
 	if session == nil {
 		http.Redirect(w, r, "/login", http.StatusFound)
@@ -657,16 +985,48 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// ─── MySQL Init ───────────────────────────────────────────────
+
+func initMySQL() (*sql.DB, error) {
+	dsn := os.Getenv("MYSQL_DSN")
+	if dsn == "" {
+		return nil, fmt.Errorf("MYSQL_DSN environment variable not set")
+	}
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open mysql: %w", err)
+	}
+
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("ping mysql: %w", err)
+	}
+
+	log.Println("MySQL connected")
+	return db, nil
+}
+
 // ─── Main ─────────────────────────────────────────────────────
 
 func main() {
 	initDeepSeek()
 
+	db, err := initMySQL()
+	if err != nil {
+		log.Fatalf("MySQL init failed: %v", err)
+	}
+	defer db.Close()
+
 	app := &App{
 		hub:           newHub(),
 		users:         newUserStore(),
 		sessions:      newSessionStore(),
-		conversations: newConversationStore(),
+		conversations: newConversationStore(db),
+		db:            db,
 	}
 	go app.hub.run()
 
@@ -678,7 +1038,7 @@ func main() {
 		}
 	}()
 
-	// Public routes (no auth required)
+	// Public routes
 	http.HandleFunc("/login", app.handleLogin)
 	http.HandleFunc("/login.css", app.serveStatic)
 	http.HandleFunc("/login.js", app.serveStatic)
@@ -686,10 +1046,17 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "time": time.Now().UTC().Format(time.RFC3339)})
 	})
 
-	// Auth API (no middleware — they handle auth internally)
+	// Auth API
 	http.HandleFunc("/api/login", app.handleLogin)
 	http.HandleFunc("/api/logout", app.handleLogout)
 	http.HandleFunc("/api/session", app.handleSession)
+
+	// Conversation API (protected)
+	http.HandleFunc("GET /api/conversations", app.authMiddleware(app.handleListConversations))
+	http.HandleFunc("POST /api/conversations", app.authMiddleware(app.handleCreateConversation))
+	http.HandleFunc("GET /api/conversations/{id}/messages", app.authMiddleware(app.handleConversationMessages))
+	http.HandleFunc("DELETE /api/conversations/{id}", app.authMiddleware(app.handleDeleteConversation))
+	http.HandleFunc("PUT /api/conversations/{id}", app.authMiddleware(app.handleRenameConversation))
 
 	// Protected routes
 	http.HandleFunc("/ws", app.authMiddleware(app.handleWS))
@@ -702,6 +1069,7 @@ func main() {
 	log.Printf("Login page: /login")
 	log.Printf("Chat page:  /")
 	log.Printf("WebSocket:  /ws")
+	log.Printf("MySQL:      connected")
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal("Server failed to start:", err)
 	}

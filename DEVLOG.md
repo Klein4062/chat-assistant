@@ -309,13 +309,101 @@ authMiddleware 拦截 → 删除 Session → 302 /login?expired=1
 - ✅ API Key 通过 .env 文件安全注入
 - ✅ Playwright E2E 截图: `screenshot-ai.png`
 
+### 2026-06-05 — Bug 修复 + UX 增强：断线消息队列
+
+**问题诊断:**
+用户反馈发送消息完全无反应。经排查，服务端一切正常（Python WebSocket 客户端 + Playwright 浏览器均测试通过），问题出在前端：
+
+1. WebSocket 连接频繁在 2 秒后断开（浏览器/代理/网络层面触发）
+2. `sendMessage()` 检测到 `ws.readyState !== OPEN` 时静默失败——只在 header 中闪过 "未连接，无法发送" 的小字，用户根本注意不到
+3. 消息留在输入框，看起来就是"发了消息完全没反应"
+
+**修复内容:**
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| 消息队列 | `app.js` | 断开时消息暂存 `pendingMessage`，重连后自动发送 |
+| Toast 通知 | `app.js` | 断线显示橙色 "连接已断开，正在重连..." 横幅 |
+| Toast 通知 | `app.js` | 重连成功显示绿色 "✅ 已重新连接"（2s 自动消失） |
+| Toast 通知 | `app.js` | 发送排队消息时显示 "消息将在重连后自动发送" |
+| 待发送气泡 | `app.js` | 断开时用户消息立即显示在聊天区，标注 "⏳ 等待重连发送..." |
+| 立即重连 | `app.js` | 用户主动发送消息时重置 backoff，立即尝试重连 |
+| Toast 样式 | `style.css` | 橙色警告渐变 + 绿色成功渐变，fixed 顶部居中，slide-down 动画 |
+| Ping 保活 | `main.go` | 服务端每 30s 发送 WebSocket Ping，防止代理/NAT 关闭空闲连接 |
+
+**修复后流程:**
+
+```
+用户发送消息 → ws 未连接？
+  ├── 是 → 立即显示气泡（⏳ 等待重连发送...）
+  │        → Toast 通知「消息将在重连后自动发送」
+  │        → 重置 backoff，立即重连
+  │        → ws.onopen → 自动发送队列中的消息
+  │        → 气泡时间戳更新为实际发送时间
+  │        → Toast「✅ 已重新连接」2s 后消失
+  └── 否 → 正常发送
+```
+
+**验证结果:**
+- ✅ 正常聊天：消息发送 → AI 流式回复 正常
+- ✅ 服务端 Ping 保活：30s 间隔，1.1MB 内存，运行稳定
+- ✅ Playwright 测试通过：登录 → 聊天 → AI 回复
+
+### 2026-06-06 — 多会话管理
+
+**新增功能:**
+- 用户可创建最多 3 个独立会话，每个会话独立 AI 对话上下文
+- 会话和聊天记录持久化到 MySQL，登出后不丢失
+- 重新登录自动恢复所有会话及历史消息
+- 侧边栏会话列表：切换、重命名（双击/编辑按钮）、删除
+- 首次登录自动创建第一个会话；删除所有会话后自动创建新会话
+- 优先选择有消息的会话（最近更新的）
+
+**技术变更:**
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| MySQL 连接 | `main.go` | 新增 `initMySQL()`，DSN 通过 `MYSQL_DSN` 环境变量注入 |
+| ConversationStore 改造 | `main.go` | key 从 `clientID` 改为 `conversationID`，DB 为主 + 内存缓存 |
+| 5 个 API | `main.go` | `GET/POST /api/conversations`、`GET /api/conversations/{id}/messages`、`DELETE/PUT /api/conversations/{id}` |
+| WebSocket 协议扩展 | `main.go` | 消息增加 `conversation_id` 字段，服务端响应同样携带 |
+| 侧边栏布局 | `index.html` | 260px 侧边栏 + 聊天区域，移动端汉堡菜单收起 |
+| 会话管理 JS | `app.js` | 列表加载、切换、新建、删除、重命名、历史加载、conversation_id 路由 |
+| 侧边栏样式 | `style.css` | 会话列表、选中高亮、操作按钮 hover 显示、移动端适配 |
+| MySQL 迁移 | 服务器 | `ALTER TABLE conversations ADD COLUMN username` |
+| 新增依赖 | `go.mod` | `github.com/go-sql-driver/mysql` v1.10.0 |
+
+**数据库设计:**
+```sql
+-- conversations 表（新增 username 列）
+id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY
+username VARCHAR(64) NOT NULL          -- FK → users.username
+title VARCHAR(255) DEFAULT '新对话'
+created_at / updated_at DATETIME
+
+-- messages 表（已有，无改动）
+id BIGINT AUTO_INCREMENT PRIMARY KEY
+conversation_id BIGINT UNSIGNED → FK → conversations(id) ON DELETE CASCADE
+role ENUM('user','assistant','system')
+content TEXT
+created_at DATETIME
+```
+
+**验证结果:**
+- ✅ API 测试：会话列表、消息历史加载、3 个上限拒绝
+- ✅ 登出重登后 3 个会话完整保留，4 条消息持久化
+- ✅ MySQL 连接正常，10 连接池，5 空闲连接
+- ✅ 前端优化：优先选中含消息的会话
+
 ## 当前功能
 
-- [x] 多客户端 WebSocket 实时通信
-- [x] 消息广播（所有连接客户端可见）
+- [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）
+- [x] 多会话管理（最多 3 个，MySQL 持久化，登出保留）
+- [x] 会话切换、重命名、删除 + 聊天记录持久化
 - [x] ~~服务端 Echo 回显~~ → DeepSeek V4 Pro AI 对话
 - [x] 连接状态指示器
-- [x] 自动重连（指数退避，最大 30s）
+- [x] 断线消息队列 + Toast 通知
+- [x] 自动重连（指数退避，发送消息时立即重连）
 - [x] 响应式设计（移动端适配）
 - [x] Enter 发送、Shift+Enter 换行
 - [x] 深色主题 UI
@@ -324,10 +412,11 @@ authMiddleware 拦截 → 删除 Session → 302 /login?expired=1
 
 ## 后续开发路线
 
-### Phase 1: AI 接入
-- [ ] 对接 DeepSeek API（或其他 LLM API）
-- [ ] 实现流式响应（`stream_start/chunk/end` 协议）
-- [ ] 添加系统 Prompt 管理
+### Phase 1: AI 接入 ✅
+- [x] 对接 DeepSeek API（OpenAI 兼容接口）
+- [x] 实现流式响应（`stream_start/chunk/end` 协议）
+- [x] 系统 Prompt 管理
+- [x] 断线消息队列 + Toast 通知
 
 ### Phase 2: 功能增强
 - [x] ~~消息持久化~~ → MySQL 8.4 已部署，待 Go 后端接入
@@ -360,9 +449,10 @@ systemctl stop chat-assistant
 
 # 重新部署（本地执行）
 GOOS=linux GOARCH=amd64 go build -o chat-server .
+ssh root@47.95.244.175 'systemctl stop chat-assistant'
 scp chat-server root@47.95.244.175:/opt/chat-assistant/
 scp -r static/* root@47.95.244.175:/opt/chat-assistant/static/
-ssh root@47.95.244.175 'systemctl restart chat-assistant'
+ssh root@47.95.244.175 'systemctl start chat-assistant'
 
 # MySQL 维护
 mysql -u root chat_assistant                      # root 管理（服务器本地）

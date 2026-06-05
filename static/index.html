@@ -11,6 +11,7 @@
         <!-- Header -->
         <header class="chat-header">
             <div class="header-left">
+                <button class="sidebar-toggle" id="sidebarToggle" title="会话列表">☰</button>
                 <div class="avatar-icon">🤖</div>
                 <div class="header-info">
                     <h1>AI 助手</h1>
@@ -32,30 +33,52 @@
             </div>
         </header>
 
-        <!-- Messages Area -->
-        <div class="messages-container" id="messagesContainer">
-            <div class="welcome-message">
-                <div class="welcome-icon">👋</div>
-                <h2>欢迎使用 AI 助手</h2>
-                <p>发送一条消息开始对话吧！</p>
-            </div>
-        </div>
+        <!-- Body: Sidebar + Chat -->
+        <div class="main-body">
+            <!-- Sidebar -->
+            <aside class="sidebar" id="sidebar">
+                <div class="sidebar-header">
+                    <button class="new-conv-btn" id="newConvButton" title="新建会话">
+                        <span>+</span> 新建会话
+                    </button>
+                </div>
+                <div class="conv-list" id="convList">
+                    <!-- Conversation items rendered by JS -->
+                </div>
+                <div class="sidebar-footer">
+                    <span class="conv-count" id="convCount">0/3</span>
+                </div>
+            </aside>
 
-        <!-- Input Area -->
-        <div class="input-container">
-            <div class="input-wrapper">
-                <textarea
-                    id="messageInput"
-                    placeholder="输入消息..."
-                    rows="1"
-                    autofocus
-                ></textarea>
-                <button id="sendButton" title="发送">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="22" y1="2" x2="11" y2="13"></line>
-                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                    </svg>
-                </button>
+            <!-- Chat Area -->
+            <div class="chat-area">
+                <!-- Messages Area -->
+                <div class="messages-container" id="messagesContainer">
+                    <div class="welcome-message" id="welcomeMessage">
+                        <div class="welcome-icon">👋</div>
+                        <h2>欢迎使用 AI 助手</h2>
+                        <p>选择一个会话或新建一个开始对话吧！</p>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="input-container">
+                    <div class="input-wrapper">
+                        <textarea
+                            id="messageInput"
+                            placeholder="输入消息..."
+                            rows="1"
+                            autofocus
+                            disabled
+                        ></textarea>
+                        <button id="sendButton" title="发送" disabled>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

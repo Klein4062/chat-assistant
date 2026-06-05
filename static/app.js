@@ -1,7 +1,8 @@
 (function() {
     'use strict';
 
-    // DOM Elements
+    // ─── DOM Elements ──────────────────────────────────────────────
+
     const messagesContainer = document.getElementById('messagesContainer');
     const messageInput = document.getElementById('messageInput');
     const sendButton = document.getElementById('sendButton');
@@ -10,16 +11,26 @@
     const statusText = connectionStatus.querySelector('.status-text');
     const logoutButton = document.getElementById('logoutButton');
     const usernameDisplay = document.getElementById('usernameDisplay');
+    const convList = document.getElementById('convList');
+    const newConvButton = document.getElementById('newConvButton');
+    const convCount = document.getElementById('convCount');
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    const welcomeMessage = document.getElementById('welcomeMessage');
 
-    // WebSocket
+    // ─── State ────────────────────────────────────────────────────
+
     let ws = null;
     let reconnectTimer = null;
     let reconnectAttempts = 0;
     const MAX_RECONNECT_DELAY = 30000;
 
-    // State
     let welcomeVisible = true;
     let currentUsername = '';
+    let currentConvID = null;
+    let conversations = [];
+    let pendingMessage = null;
+    let toastTimer = null;
+    let currentStreamConvID = null; // conversation_id of active stream
 
     // ─── Session Check ──────────────────────────────────────────
 
@@ -35,7 +46,8 @@
             if (usernameDisplay) {
                 usernameDisplay.textContent = currentUsername;
             }
-            // Proceed to connect WebSocket
+            // Load conversations and connect
+            await loadConversations();
             initConnection();
         } catch (e) {
             window.location.href = '/login';
@@ -69,6 +81,16 @@
             console.log('WebSocket connected');
             reconnectAttempts = 0;
             updateConnectionStatus('connected', '已连接');
+
+            dismissToast();
+            showToast('✅ 已重新连接', 'success', 2000);
+
+            if (pendingMessage && currentConvID) {
+                const msg = pendingMessage;
+                pendingMessage = null;
+                updatePendingToSent();
+                ws.send(JSON.stringify({ type: 'message', content: msg, conversation_id: currentConvID }));
+            }
         };
 
         ws.onmessage = function(event) {
@@ -83,6 +105,7 @@
         ws.onclose = function(event) {
             console.log('WebSocket closed:', event.code, event.reason);
             updateConnectionStatus('disconnected', '已断开');
+            showToast('⏳ 连接已断开，正在重连...', 'warning');
             scheduleReconnect();
         };
 
@@ -111,26 +134,220 @@
         statusText.textContent = text;
     }
 
+    // ─── Conversation Management ────────────────────────────────
+
+    async function loadConversations() {
+        try {
+            const resp = await fetch('/api/conversations');
+            if (!resp.ok) throw new Error('Failed to load');
+            conversations = await resp.json();
+            updateConvListUI();
+            updateConvCountUI();
+
+            if (conversations.length === 0) {
+                // Auto-create first conversation
+                await createConversation();
+            } else {
+                // Select the most recently updated conversation that has messages,
+                // otherwise fall back to the most recent one
+                const withMessages = conversations.find(c => c.message_count > 0);
+                const selected = withMessages || conversations[0];
+                selectConversation(selected.id, true);
+            }
+        } catch (e) {
+            console.error('Failed to load conversations:', e);
+        }
+    }
+
+    async function createConversation(title) {
+        try {
+            const resp = await fetch('/api/conversations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: title || '' })
+            });
+            if (!resp.ok) {
+                const err = await resp.json();
+                showToast('⚠️ ' + (err.error || '创建失败'), 'warning', 3000);
+                return null;
+            }
+            const conv = await resp.json();
+            conversations.unshift(conv);
+            updateConvListUI();
+            updateConvCountUI();
+            selectConversation(conv.id, true);
+            return conv;
+        } catch (e) {
+            console.error('Failed to create conversation:', e);
+            return null;
+        }
+    }
+
+    async function deleteConversation(convID) {
+        try {
+            const resp = await fetch(`/api/conversations/${convID}`, { method: 'DELETE' });
+            if (!resp.ok) throw new Error('Failed to delete');
+            conversations = conversations.filter(c => c.id !== convID);
+            updateConvListUI();
+            updateConvCountUI();
+
+            if (convID === currentConvID) {
+                if (conversations.length > 0) {
+                    selectConversation(conversations[0].id, true);
+                } else {
+                    await createConversation();
+                }
+            }
+        } catch (e) {
+            console.error('Failed to delete conversation:', e);
+            showToast('⚠️ 删除失败', 'warning', 3000);
+        }
+    }
+
+    async function renameConversation(convID, newTitle) {
+        try {
+            const resp = await fetch(`/api/conversations/${convID}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: newTitle })
+            });
+            if (!resp.ok) throw new Error('Failed to rename');
+            const conv = conversations.find(c => c.id === convID);
+            if (conv) conv.title = newTitle;
+            updateConvListUI();
+        } catch (e) {
+            console.error('Failed to rename conversation:', e);
+        }
+    }
+
+    async function selectConversation(convID, loadHistory) {
+        currentConvID = convID;
+        currentStreamConvID = null;
+
+        // Clear messages
+        messagesContainer.querySelectorAll('.message-row,.welcome-message').forEach(el => {
+            if (el.id !== 'welcomeMessage') el.remove();
+        });
+        welcomeVisible = true;
+        const wm = document.getElementById('welcomeMessage');
+        if (wm) wm.style.display = '';
+
+        // Enable input
+        messageInput.disabled = false;
+        sendButton.disabled = false;
+        streamBubble = null;
+        streamContent = '';
+
+        // Update sidebar highlight
+        updateConvListUI();
+
+        // Load history
+        if (loadHistory || loadHistory === undefined) {
+            try {
+                const resp = await fetch(`/api/conversations/${convID}/messages`);
+                if (resp.ok) {
+                    const msgs = await resp.json();
+                    if (msgs && msgs.length > 0) {
+                        removeWelcome();
+                        msgs.forEach(m => {
+                            const sender = m.role === 'user' ? 'user' : 'server';
+                            const name = m.role === 'user' ? currentUsername : 'AI';
+                            addMessageBubble(m.content, sender, name, null);
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load messages:', e);
+            }
+        }
+    }
+
+    function updateConvListUI() {
+        if (!convList) return;
+        convList.innerHTML = '';
+
+        conversations.forEach(conv => {
+            const item = document.createElement('div');
+            item.className = 'conv-item';
+            if (conv.id === currentConvID) {
+                item.classList.add('active');
+            }
+            item.dataset.id = conv.id;
+
+            item.innerHTML = `
+                <div class="conv-title">${escapeHtml(conv.title)}</div>
+                <div class="conv-actions">
+                    <button class="conv-action-btn rename-btn" title="重命名">✎</button>
+                    <button class="conv-action-btn delete-btn" title="删除">✕</button>
+                </div>
+            `;
+
+            // Click to switch
+            item.querySelector('.conv-title').addEventListener('click', () => {
+                if (conv.id !== currentConvID) {
+                    selectConversation(conv.id, true);
+                }
+            });
+
+            // Rename
+            item.querySelector('.rename-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                const newTitle = prompt('请输入新标题：', conv.title);
+                if (newTitle && newTitle.trim() && newTitle.trim() !== conv.title) {
+                    renameConversation(conv.id, newTitle.trim());
+                }
+            });
+
+            // Delete
+            item.querySelector('.delete-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (confirm(`确定删除会话「${conv.title}」吗？聊天记录将被永久删除。`)) {
+                    deleteConversation(conv.id);
+                }
+            });
+
+            convList.appendChild(item);
+        });
+
+        // Update new button state
+        if (newConvButton) {
+            newConvButton.disabled = conversations.length >= 3;
+            newConvButton.style.opacity = conversations.length >= 3 ? '0.4' : '1';
+        }
+    }
+
+    function updateConvCountUI() {
+        if (convCount) {
+            convCount.textContent = `${conversations.length}/3`;
+        }
+    }
+
     // ─── Message Handling ──────────────────────────────────────
 
-    let streamBubble = null;     // The bubble being built during streaming
-    let streamContent = '';      // Accumulated content
+    let streamBubble = null;
+    let streamContent = '';
 
     function handleMessage(msg) {
+        // Filter by conversation_id to prevent cross-conversation leaks
+        if (msg.conversation_id && msg.conversation_id !== currentConvID) {
+            return;
+        }
+
         switch (msg.type) {
             case 'message':
                 removeWelcome();
-                const sender = msg.username === currentUsername ? 'user-self' : 'server';
-                addMessageBubble(msg.content, sender, msg.username, msg.timestamp);
+                addMessageBubble(msg.content, 'server', msg.username, msg.timestamp);
                 break;
 
             case 'stream_start':
+                currentStreamConvID = msg.conversation_id;
                 removeWelcome();
                 showTypingIndicator();
                 streamContent = '';
                 break;
 
             case 'stream_chunk':
+                if (msg.conversation_id !== currentConvID) break;
                 hideTypingIndicator();
                 streamContent += msg.content;
                 if (!streamBubble) {
@@ -140,6 +357,8 @@
                 break;
 
             case 'stream_end':
+                if (msg.conversation_id !== currentConvID) break;
+                currentStreamConvID = null;
                 hideTypingIndicator();
                 if (streamBubble) {
                     finalizeStreamingBubble(streamBubble, streamContent, msg.timestamp);
@@ -148,8 +367,25 @@
                 } else if (msg.content) {
                     addMessageBubble(msg.content, 'server', 'AI', msg.timestamp);
                 }
+                // Refresh conversation list to update message counts
+                refreshConversationList();
+                break;
+
+            case 'error':
+                showToast('⚠️ ' + msg.content, 'warning', 4000);
                 break;
         }
+    }
+
+    async function refreshConversationList() {
+        try {
+            const resp = await fetch('/api/conversations');
+            if (resp.ok) {
+                conversations = await resp.json();
+                updateConvListUI();
+                updateConvCountUI();
+            }
+        } catch (e) {}
     }
 
     function showTypingIndicator() {
@@ -200,7 +436,6 @@
         if (bubble) {
             bubble.classList.remove('streaming-bubble');
         }
-        // Add timestamp
         if (timestamp) {
             const time = document.createElement('div');
             time.className = 'message-time';
@@ -209,41 +444,55 @@
         }
     }
 
+    // ─── Send Message ──────────────────────────────────────────
+
     function sendMessage() {
         const content = messageInput.value.trim();
         if (!content) return;
 
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-            updateConnectionStatus('disconnected', '未连接，无法发送');
+        if (!currentConvID) {
+            showToast('⚠️ 请先选择或创建一个会话', 'warning', 3000);
             return;
         }
-
-        const msg = { type: 'message', content: content };
-        ws.send(JSON.stringify(msg));
-
-        // Show user's own message immediately
-        removeWelcome();
-        addMessageBubble(content, 'user', currentUsername, new Date().toISOString());
 
         messageInput.value = '';
         messageInput.style.height = 'auto';
         messageInput.focus();
+
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            pendingMessage = content;
+            removeWelcome();
+            addPendingMessageBubble(content);
+            showToast('⏳ 连接已断开，消息将在重连后自动发送', 'warning');
+            reconnectAttempts = 0;
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            connect();
+            return;
+        }
+
+        const msg = { type: 'message', content: content, conversation_id: currentConvID };
+        ws.send(JSON.stringify(msg));
+
+        removeWelcome();
+        addMessageBubble(content, 'user', currentUsername, new Date().toISOString());
     }
+
+    // ─── Message Bubbles ──────────────────────────────────────
 
     function addMessageBubble(content, sender, username, timestamp) {
         const row = document.createElement('div');
         row.className = `message-row ${sender}`;
 
-        // Avatar
         const avatar = document.createElement('div');
         avatar.className = 'message-avatar';
         avatar.textContent = sender === 'user' || sender === 'user-self' ? '👤' : '🤖';
         row.appendChild(avatar);
 
-        // Content wrapper
         const contentWrapper = document.createElement('div');
 
-        // Username label (if other user's message)
         if (username && sender !== 'user' && sender !== 'user-self') {
             const nameLabel = document.createElement('div');
             nameLabel.className = 'message-username';
@@ -270,11 +519,84 @@
 
     function removeWelcome() {
         if (!welcomeVisible) return;
-        const welcome = messagesContainer.querySelector('.welcome-message');
+        const welcome = document.getElementById('welcomeMessage');
         if (welcome) {
-            welcome.remove();
+            welcome.style.display = 'none';
             welcomeVisible = false;
         }
+    }
+
+    // ─── Toast Notifications ─────────────────────────────────────
+
+    function showToast(message, type, duration) {
+        dismissToast();
+
+        const toast = document.createElement('div');
+        toast.id = 'toast';
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+        document.body.appendChild(toast);
+
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => toast.classList.add('visible'));
+        });
+
+        if (duration) {
+            toastTimer = setTimeout(dismissToast, duration);
+        }
+    }
+
+    function dismissToast() {
+        if (toastTimer) {
+            clearTimeout(toastTimer);
+            toastTimer = null;
+        }
+        const toast = document.getElementById('toast');
+        if (toast) {
+            toast.classList.remove('visible');
+            setTimeout(() => {
+                if (toast.parentNode) toast.remove();
+            }, 300);
+        }
+    }
+
+    // ─── Pending Message Bubble ──────────────────────────────────
+
+    function addPendingMessageBubble(content) {
+        const existing = document.getElementById('pendingMessage');
+        if (existing) existing.remove();
+
+        const row = document.createElement('div');
+        row.className = 'message-row user';
+        row.id = 'pendingMessage';
+        row.innerHTML = `
+            <div class="message-avatar">👤</div>
+            <div class="content-wrapper">
+                <div class="message-bubble">${escapeHtml(content)}</div>
+                <div class="message-time pending-label">⏳ 等待重连发送...</div>
+            </div>
+        `;
+        messagesContainer.appendChild(row);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    function updatePendingToSent() {
+        const row = document.getElementById('pendingMessage');
+        if (row) {
+            row.removeAttribute('id');
+            const label = row.querySelector('.pending-label');
+            if (label) {
+                label.textContent = formatTime(new Date().toISOString());
+                label.classList.remove('pending-label');
+                label.classList.add('message-time');
+            }
+        }
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
     }
 
     function formatTime(timestamp) {
@@ -304,19 +626,31 @@
         this.style.height = Math.min(this.scrollHeight, 120) + 'px';
     });
 
+    // New conversation button
+    if (newConvButton) {
+        newConvButton.addEventListener('click', function() {
+            createConversation();
+        });
+    }
+
+    // Sidebar toggle for mobile
+    if (sidebarToggle) {
+        sidebarToggle.addEventListener('click', function() {
+            document.getElementById('sidebar').classList.toggle('open');
+        });
+    }
+
     // ─── Idle Timeout ───────────────────────────────────────────
 
-    const IDLE_CHECK_INTERVAL = 60 * 1000;      // check every 60s
-    const WARNING_THRESHOLD = 60;                // show warning at 60s remaining
+    const IDLE_CHECK_INTERVAL = 60 * 1000;
+    const WARNING_THRESHOLD = 60;
 
     let idleCheckTimer = null;
     let warningShown = false;
 
     function startIdleMonitoring() {
-        // Periodically check session status
         idleCheckTimer = setInterval(checkSessionTimeout, IDLE_CHECK_INTERVAL);
-        // Also check immediately
-        setTimeout(checkSessionTimeout, 10000); // 10s after page load
+        setTimeout(checkSessionTimeout, 10000);
     }
 
     async function checkSessionTimeout() {
@@ -325,7 +659,6 @@
             const data = await resp.json();
 
             if (!data.authenticated) {
-                // Session expired
                 clearInterval(idleCheckTimer);
                 window.location.href = '/login?expired=1';
                 return;
@@ -343,7 +676,6 @@
         warningShown = true;
         const mins = Math.ceil(remainingSecs / 60);
 
-        // Create a subtle warning bar at the top
         const bar = document.createElement('div');
         bar.id = 'timeoutWarning';
         bar.className = 'timeout-warning';
@@ -353,7 +685,6 @@
         `;
         document.querySelector('.app-container').prepend(bar);
 
-        // Animate it in
         setTimeout(() => bar.classList.add('visible'), 100);
     }
 
@@ -366,13 +697,15 @@
         warningShown = false;
     }
 
-    // User activity resets warning
     ['mousedown', 'keydown', 'touchstart', 'scroll'].forEach(evt => {
         document.addEventListener(evt, function() {
             if (warningShown) {
                 dismissTimeoutWarning();
-                // Ping server to refresh session
                 fetch('/api/session').catch(() => {});
+            }
+            const toast = document.getElementById('toast');
+            if (toast && toast.classList.contains('toast-success')) {
+                dismissToast();
             }
         }, { passive: true });
     });
@@ -385,7 +718,6 @@
         startIdleMonitoring();
     }
 
-    // Start: check session first, then connect
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', checkSession);
     } else {
