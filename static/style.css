@@ -605,8 +605,23 @@ html, body {
     font-style: italic;
 }
 
+/* Sidebar Backdrop (mobile) */
+.sidebar-backdrop {
+    display: none;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
+    .sidebar-backdrop {
+        display: block;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 99;
+    }
     .sidebar-toggle {
         display: flex;
     }

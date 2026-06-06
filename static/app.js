@@ -224,6 +224,14 @@
         currentConvID = convID;
         currentStreamConvID = null;
 
+        // Close sidebar on mobile after selecting a conversation
+        const sidebar = document.getElementById('sidebar');
+        if (sidebar && window.innerWidth <= 768 && sidebar.classList.contains('open')) {
+            sidebar.classList.remove('open');
+            const backdrop = document.getElementById('sidebarBackdrop');
+            if (backdrop) backdrop.remove();
+        }
+
         // Clear messages
         messagesContainer.querySelectorAll('.message-row,.welcome-message').forEach(el => {
             if (el.id !== 'welcomeMessage') el.remove();
@@ -635,10 +643,46 @@
 
     // Sidebar toggle for mobile
     if (sidebarToggle) {
-        sidebarToggle.addEventListener('click', function() {
-            document.getElementById('sidebar').classList.toggle('open');
+        sidebarToggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            toggleSidebar();
         });
     }
+
+    function toggleSidebar() {
+        const sidebar = document.getElementById('sidebar');
+        if (!sidebar) return;
+        const isOpen = sidebar.classList.toggle('open');
+        // Show/hide backdrop
+        let backdrop = document.getElementById('sidebarBackdrop');
+        if (isOpen) {
+            if (!backdrop) {
+                backdrop = document.createElement('div');
+                backdrop.id = 'sidebarBackdrop';
+                backdrop.className = 'sidebar-backdrop';
+                document.body.appendChild(backdrop);
+                backdrop.addEventListener('click', function() {
+                    sidebar.classList.remove('open');
+                    backdrop.remove();
+                });
+            }
+        } else {
+            if (backdrop) backdrop.remove();
+        }
+    }
+
+    // Close sidebar when clicking outside on mobile
+    document.addEventListener('click', function(e) {
+        const sidebar = document.getElementById('sidebar');
+        if (!sidebar || !sidebar.classList.contains('open')) return;
+        if (window.innerWidth > 768) return;
+        // Close if click is outside sidebar and not on toggle
+        if (!sidebar.contains(e.target) && e.target !== sidebarToggle) {
+            sidebar.classList.remove('open');
+            const backdrop = document.getElementById('sidebarBackdrop');
+            if (backdrop) backdrop.remove();
+        }
+    });
 
     // ─── Idle Timeout ───────────────────────────────────────────
 
