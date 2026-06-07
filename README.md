@@ -6,8 +6,9 @@
 
 ```
 浏览器 ──▶ Caddy (:80) ──▶ Go Server (:8080) ──▶ MySQL (127.0.0.1:3306)
-  │                           │    │
-  └── WebSocket ──────────────┘    └── DeepSeek API (stream)
+  │                           │    │    │
+  └── WebSocket ──────────────┘    │    └── DeepSeek API (stream)
+                                   └── cn.bing.com (联网搜索)
 ```
 
 ## 技术栈
@@ -32,7 +33,7 @@
 - [x] **10 分钟无操作自动退出**（会话超时 + 前端警告条）
 - [x] 未登录自动重定向登录页
 - [x] 流式渲染动画（打字指示器 + 闪烁光标）
-- [x] 断线自动重连 + **消息队列**（断开时消息暂存，重连后自动发送）
+- [x] **🔍 联网搜索**（🌐 开关，Bing 内置免费 + Serper.dev + 自定义 API，来源卡片展示）
 - [x] 连接状态 Toast 通知（断线警告 + 重连成功）
 - [x] 自动重连（指数退避，断开时立即重连）
 - [x] 深色主题 + 响应式布局
@@ -85,7 +86,12 @@ ssh root@<host> 'systemctl restart chat-assistant'
 
 ```
 chat-assistant/
-├── main.go              # Go 后端（HTTP + WebSocket + Auth + DeepSeek）
+├── main.go              # 入口 + DeepSeek 客户端 + MySQL + 路由
+├── models.go            # 数据结构 / 常量 / 类型定义
+├── handlers.go          # HTTP/WS 处理器 + 认证中间件
+├── store.go             # 用户/会话/对话存储 + 数据库操作
+├── hub.go               # WebSocket 连接管理
+├── search.go            # 联网搜索（Bing + Serper.dev + 自定义 API）
 ├── go.mod / go.sum
 ├── static/
 │   ├── index.html       # 聊天页面
@@ -123,13 +129,13 @@ chat-assistant/
 
 ```json
 // 客户端 → 服务端
-{"type": "message", "content": "你好"}
+{"type": "message", "content": "你好", "conversation_id": 1, "enable_search": true}
 
-// 服务端 → 客户端（流式 AI 回复）
-{"type": "stream_start"}                          // 开始生成
-{"type": "stream_chunk", "content": "你"}         // 逐 chunk 推送
-{"type": "stream_chunk", "content": "好！"}
-{"type": "stream_end", "content": "你好！完整内容"} // 生成完毕
+// 服务端 → 客户端
+{"type": "search_results", "content": "[{...}]", "conversation_id": 1}  // 搜索来源（开启联网时）
+{"type": "stream_start", "conversation_id": 1}                          // 开始生成
+{"type": "stream_chunk", "content": "你", "conversation_id": 1}         // 逐 chunk 推送
+{"type": "stream_end", "content": "你好！", "conversation_id": 1}       // 生成完毕
 ```
 
 ## 环境变量
@@ -140,6 +146,8 @@ chat-assistant/
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 地址 |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名称 |
 | `MYSQL_DSN` | (必填) | MySQL 连接串 `user:pass@tcp(127.0.0.1:3306)/chat_assistant?parseTime=true` |
+| `SERPER_API_KEY` | (可选) | Serper.dev Google 搜索 Key，免费注册 https://serper.dev |
+| `SEARCH_API_URL` | (可选) | 自定义搜索端点（SearXNG/DuckDuckGo 兼容） |
 
 所有密钥存储在服务器 `/opt/chat-assistant/.env`（权限 600），systemd 通过 `EnvironmentFile` 注入。
 
@@ -166,8 +174,9 @@ systemctl restart chat-assistant
 ## 开发计划
 
 - [x] 接入 DeepSeek API，流式对话
+- [x] 多会话管理（MySQL 持久化，最多 3 个）
+- [x] 联网搜索（Bing 内置免费，零配置）
 - [ ] Markdown 渲染 + 代码高亮
-- [ ] 多会话管理
 - [ ] HTTPS + 域名绑定
 - [ ] Docker 化
 - [ ] 多模型切换（Claude, GPT 等）

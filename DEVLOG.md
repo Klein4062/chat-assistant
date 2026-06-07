@@ -416,6 +416,71 @@ created_at DATETIME
 - ✅ 移动端：选择会话后侧边栏自动关闭、backdrop 移除
 - ✅ 移动端：打开侧边栏时 backdrop 出现、侧边栏在屏幕上（left: 0）
 
+### 2026-06-06 — 联网搜索功能
+
+**新增功能:**
+- 聊天界面新增「🔍 联网搜索」Toggle 开关（输入区上方）
+- 开启后自动搜索网络并将结果注入 AI 对话上下文
+- AI 基于搜索结果回答，前端展示搜索来源引用（标题 + URL + 摘要）
+- 支持多种搜索后端，优先级：Serper.dev > 自定义 SEARCH_API_URL
+
+**技术实现:**
+
+| 改动 | 文件 | 说明 |
+|------|------|------|
+| WebSocket 协议 | `main.go` | 消息增加 `enable_search` 字段，响应新增 `search_results` 类型 |
+| API 请求 | `main.go` | `ChatCompletionRequest.EnableSearch` 透传至 DeepSeek |
+| 搜索客户端 | `search.go` | `searchWeb()` — Serper.dev Google 搜索 (免费 100次/月) + 自定义后端 |
+| 上下文注入 | `search.go` | `buildSearchContext()` — 搜索结果拼接为用户消息注入对话历史 |
+| 搜索结果展示 | `app.js` | `addSearchResultsBubble()` — 搜索来源卡片（编号 + 标题 + 链接） |
+| Toggle 组件 | `index.html` | CSS-only 滑动开关，`input:checked` 驱动蓝色高亮 |
+| Toggle 样式 | `style.css` | `.search-toggle-slider` 滑动动画，`.search-result-item` 来源卡片 |
+
+**搜索后端（多层级 fallback）:**
+
+| 层级 | 后端 | 说明 |
+|------|------|------|
+| 1 | Serper.dev | Google 搜索，通过 `SERPER_API_KEY` 配置（免费 100次/月） |
+| 2 | `SEARCH_API_URL` | 自定义 SearXNG/DuckDuckGo 兼容端点 |
+| 3 | **Bing 内置** | 零配置、免费、国内可用，`cn.bing.com` HTML 抓取 |
+
+**环境变量:**
+
+| 变量 | 说明 |
+|------|------|
+| `SERPER_API_KEY` | Serper.dev API Key（可选，Google 搜索） |
+| `SEARCH_API_URL` | 自定义搜索端点（可选） |
+
+不配置任何环境变量时，自动使用内置的 Bing 搜索。
+
+**验证结果:**
+- ✅ Toggle 开关正常（🌐 联网 胶囊按钮，蓝色光圈激活态）
+- ✅ **内置 Bing 搜索：5 条结果 "Python最新版本"，AI 回答"Python 3.14，2025年10月发布"**
+- ✅ 搜索结果在前端以来源卡片展示（编号 + 标题 + 链接）
+- ✅ 搜索上下文注入 AI 对话，答案包含搜索来源引用
+- ✅ 零配置即可使用（无 API Key 也能搜索）
+
+### 2026-06-08 — 代码重构：拆分 + 中文注释
+
+**重构目的：** 项目规模增长后单文件 `main.go` 已达 1126 行，可读性差。按职责拆分为 6 个 Go 文件，全部加中文注释。
+
+**文件拆分：**
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `models.go` | ~130 | 数据结构、常量、全局变量 |
+| `store.go` | ~250 | 用户存储、会话存储、对话存储、DB 操作 |
+| `hub.go` | ~55 | WebSocket Hub（注册/注销/广播） |
+| `handlers.go` | ~330 | HTTP/WS 处理器、认证中间件、静态文件 |
+| `search.go` | ~200 | 联网搜索（Bing/Serper/自定义 API） |
+| `main.go` | ~170 | 入口、DeepSeek 客户端、MySQL、路由注册 |
+
+**其他改动：**
+- 全部 Go 文件改用中文注释（`═══` 块分隔 + 功能说明）
+- `app.js` 和 `style.css` 章节标题改为中文
+- 新增 `CLAUDE.md` AI Agent 开发指南
+- 更新 `README.md` 架构图和开发计划
+
 ## 当前功能
 
 - [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）
@@ -428,6 +493,7 @@ created_at DATETIME
 - [x] 响应式设计（移动端适配）
 - [x] Enter 发送、Shift+Enter 换行
 - [x] 深色主题 UI
+- [x] **🔍 联网搜索**（Bing 内置 + Serper.dev + 自定义 API，零配置可用）
 - [x] 用户登录/登出（bcrypt + Session Cookie）
 - [x] 受保护路由（未登录自动跳转登录页）
 
@@ -442,6 +508,7 @@ created_at DATETIME
 ### Phase 2: 功能增强
 - [x] ~~消息持久化~~ → MySQL 8.4 已部署，待 Go 后端接入
 - [x] ~~多会话管理~~ → MySQL 持久化 + 侧边栏 UI
+- [x] ~~联网搜索~~ → Bing 内置 + Serper.dev + 自定义 API，零配置可用
 - [ ] Markdown 渲染 + 代码高亮
 - [ ] 消息编辑 / 删除
 - [ ] 文件上传（图片等）

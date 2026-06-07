@@ -1,4 +1,9 @@
-/* Reset & Base */
+/* ═══════════════════════════════════════════════════════════════
+   Chat Assistant — 深色主题样式
+   包含：布局 / 侧边栏 / 消息气泡 / 流式动画 / Toast / 搜索
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 全局重置 ─────────────────────────────────────────────── */
 *, *::before, *::after {
     margin: 0;
     padding: 0;
@@ -30,7 +35,7 @@ html, body {
     overflow: hidden;
 }
 
-/* App Container */
+/* ── 应用容器 ─────────────────────────────────────────────── */
 .app-container {
     display: flex;
     flex-direction: column;
@@ -40,14 +45,14 @@ html, body {
     background: var(--bg-secondary);
 }
 
-/* Main Body: Sidebar + Chat */
+/* ── 主布局：侧边栏 + 聊天区 ─────────────────────────────── */
 .main-body {
     display: flex;
     flex: 1;
     overflow: hidden;
 }
 
-/* Chat Area */
+/* ── 聊天区域 ─────────────────────────────────────────── */
 .chat-area {
     flex: 1;
     display: flex;
@@ -56,7 +61,7 @@ html, body {
     min-width: 0;
 }
 
-/* Header */
+/* ── 顶栏 ─────────────────────────────────────────────── */
 .chat-header {
     display: flex;
     align-items: center;
@@ -110,7 +115,7 @@ html, body {
     background: var(--success);
 }
 
-/* Header Right */
+/* ── 顶栏右侧（用户名 + 登出）────────────────────────── */
 .header-right {
     display: flex;
     align-items: center;
@@ -145,7 +150,7 @@ html, body {
     border-color: var(--danger);
 }
 
-/* Sidebar Toggle */
+/* ── 移动端侧边栏切换按钮 ─────────────────────────────── */
 .sidebar-toggle {
     width: 36px;
     height: 36px;
@@ -165,7 +170,7 @@ html, body {
     background: var(--bg-input);
 }
 
-/* Sidebar */
+/* ── 侧边栏 ──────────────────────────────────────────── */
 .sidebar {
     width: 260px;
     background: var(--bg-tertiary);
@@ -307,7 +312,7 @@ html, body {
     color: var(--text-secondary);
 }
 
-/* Messages Container */
+/* ── 消息区域 ────────────────────────────────────────── */
 .messages-container {
     flex: 1;
     overflow-y: auto;
@@ -330,7 +335,7 @@ html, body {
     border-radius: 3px;
 }
 
-/* Welcome Message */
+/* ── 欢迎消息 ────────────────────────────────────────── */
 .welcome-message {
     text-align: center;
     padding: 60px 20px;
@@ -354,7 +359,7 @@ html, body {
     font-size: 14px;
 }
 
-/* Message Bubbles */
+/* ── 消息气泡 ────────────────────────────────────────── */
 .message-row {
     display: flex;
     gap: 8px;
@@ -426,7 +431,53 @@ html, body {
     text-align: right;
 }
 
-/* Input Container */
+/* Search Toggle — prominent button with text inside input bar */
+.search-toggle {
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    flex-shrink: 0;
+}
+
+.search-toggle input {
+    display: none;
+}
+
+.search-toggle-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    font-size: 12px;
+    color: var(--text-secondary);
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.search-toggle-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.search-toggle-icon {
+    font-size: 14px;
+}
+
+.search-toggle input:checked ~ .search-toggle-btn {
+    background: rgba(79, 140, 255, 0.15);
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+}
+
+.search-toggle input:checked ~ .search-toggle-btn .search-toggle-text {
+    color: var(--accent);
+}
+
+/* ── 输入区域 ────────────────────────────────────────── */
 .input-container {
     padding: 16px 20px;
     background: var(--bg-tertiary);
@@ -494,7 +545,7 @@ html, body {
     cursor: not-allowed;
 }
 
-/* Typing Indicator */
+/* ── AI 打字指示器动画 ───────────────────────────────── */
 .typing-indicator {
     display: flex;
     align-items: center;
@@ -518,7 +569,7 @@ html, body {
     30% { transform: translateY(-6px); opacity: 1; }
 }
 
-/* Timeout Warning Bar */
+/* ── 会话即将过期警告条 ──────────────────────────────── */
 .timeout-warning {
     display: flex;
     align-items: center;
@@ -544,7 +595,7 @@ html, body {
     font-size: 16px;
 }
 
-/* Streaming Bubble */
+/* ── 流式输出气泡（闪烁光标）─────────────────────────── */
 .streaming-bubble::after {
     content: '▊';
     animation: blink 1s step-end infinite;
@@ -568,7 +619,7 @@ html, body {
     padding: 0 4px;
 }
 
-/* Toast Notification */
+/* ── Toast 通知弹窗 ──────────────────────────────────── */
 .toast {
     position: fixed;
     top: -60px;
@@ -599,7 +650,74 @@ html, body {
     color: white;
 }
 
-/* Pending message label */
+/* ── 搜索来源卡片 ────────────────────────────────────── */
+.search-results-row {
+    max-width: 85%;
+}
+
+.search-results-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.search-result-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--bg-input);
+    text-decoration: none;
+    transition: background 0.15s;
+    font-size: 12px;
+}
+
+.search-result-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.search-result-idx {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    font-size: 10px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.search-result-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.search-result-title {
+    color: var(--accent);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.search-result-snippet {
+    color: var(--text-secondary);
+    font-size: 11px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* ── 待发送消息标签 ──────────────────────────────────── */
 .pending-label {
     color: var(--warning) !important;
     font-style: italic;
@@ -610,7 +728,7 @@ html, body {
     display: none;
 }
 
-/* Responsive */
+/* ── 响应式布局 ──────────────────────────────────────── */
 @media (max-width: 768px) {
     .sidebar-backdrop {
         display: block;
