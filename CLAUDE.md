@@ -7,9 +7,9 @@ Go 后端 + 原生前端 + MySQL 的 AI 聊天应用，部署在阿里云 ECS `4
 ## 架构
 
 ```
-浏览器 → Caddy (:80) → Go Server (:8080) → MySQL (127.0.0.1:3306)
-  ↕ WebSocket          ↕ DeepSeek API (stream)
-                       ↕ cn.bing.com (搜索)
+浏览器 → Caddy (:80) → Go Server (:8080) → OpenClaw (:18789) → DeepSeek API (stream)
+  ↕ WebSocket          ↕ cn.bing.com (搜索)
+                       ↕ MySQL (127.0.0.1:3306)
 ```
 
 ## 技术栈
@@ -17,6 +17,7 @@ Go 后端 + 原生前端 + MySQL 的 AI 聊天应用，部署在阿里云 ECS `4
 | 层 | 技术 |
 |----|------|
 | 后端 | Go 1.25+, gorilla/websocket, go-sql-driver/mysql |
+| AI 网关 | OpenClaw 2026.6.1 (Agent 能力层, systemd `openclaw.service`) |
 | AI | DeepSeek V4 Pro (`deepseek-chat`), OpenAI 兼容 SSE 流式 |
 | 搜索 | Bing 内置（cn.bing.com HTML 抓取） / Serper.dev / 自定义 API |
 | 前端 | 原生 HTML/CSS/JS，零依赖 |
@@ -29,16 +30,18 @@ Go 后端 + 原生前端 + MySQL 的 AI 聊天应用，部署在阿里云 ECS `4
 
 | 文件 | 职责 |
 |------|------|
-| `main.go` | 入口、DeepSeek 客户端、MySQL 初始化、路由注册 |
-| `models.go` | 数据结构、常量、全局变量 |
+| `main.go` | 入口、DeepSeek/OpenClaw 客户端、MySQL 初始化、路由注册 |
+| `models.go` | 数据结构、常量、全局变量、OpenClawSessionStore |
 | `handlers.go` | HTTP/WS 处理器、认证中间件、静态文件服务 |
-| `store.go` | 用户/会话/对话存储、MySQL CRUD |
+| `store.go` | 用户/会话/对话存储、MySQL CRUD、OpenClaw session 映射 |
 | `hub.go` | WebSocket Hub（注册/注销/广播） |
 | `search.go` | 联网搜索：Bing 抓取、Serper.dev、自定义 API、上下文注入 |
 | `static/index.html` | 聊天页面（侧边栏 + 聊天区 + 输入框 + 搜索开关） |
 | `static/app.js` | 前端逻辑：WS 连接、消息队列、Toast、会话管理、搜索切换 |
 | `static/style.css` | 深色主题、流式动画、侧边栏、搜索卡片、响应式 |
 | `static/login.html` / `.js` / `.css` | 登录页面 |
+| `/root/.openclaw/openclaw.json` | OpenClaw 配置（模型/网关/Agent） |
+| `/etc/systemd/system/openclaw.service` | OpenClaw 守护进程 |
 
 ## 构建 & 部署
 
@@ -51,6 +54,17 @@ ssh root@47.95.244.175 'systemctl stop chat-assistant'
 scp chat-server root@47.95.244.175:/opt/chat-assistant/
 scp static/* root@47.95.244.175:/opt/chat-assistant/static/
 ssh root@47.95.244.175 'systemctl start chat-assistant'
+```
+
+```bash
+# OpenClaw 管理
+ssh root@47.95.244.175 'systemctl status openclaw'   # 网关状态
+ssh root@47.95.244.175 'systemctl restart openclaw'  # 重启网关
+ssh root@47.95.244.175 'journalctl -u openclaw -f'   # 网关日志
+
+# 远程控制台（SSH 隧道）
+ssh -Nf -L 18789:127.0.0.1:18789 root@47.95.244.175  # 建立隧道
+# 浏览器访问 http://localhost:18789/#token=<auth_token>
 ```
 
 ## 服务器信息
@@ -100,3 +114,5 @@ ssh root@47.95.244.175 'systemctl start chat-assistant'
 - **会话超时**：10 分钟无操作自动过期
 - **会话上限**：每用户最多 3 个会话
 - **搜索**：不配任何 Key 时自动用内置 Bing（零配置可用）
+- **OpenClaw 路由**：`OPENCLAW_ENABLED=true` 走网关，未配或 token 为空自动回退直连 DeepSeek
+- **OpenClaw Session**：`User` 字段 `{username}-conv-{conversationID}` 保证会话一致性
