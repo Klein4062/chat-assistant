@@ -5,10 +5,10 @@
 ## 架构
 
 ```
-浏览器 ──▶ Caddy (:80) ──▶ Go Server (:8080) ──▶ OpenClaw (:18789) ──▶ DeepSeek API (stream)
-  │                           │    │    │
-  └── WebSocket ──────────────┘    │    └── cn.bing.com (联网搜索)
-                                   └── MySQL (127.0.0.1:3306)
+浏览器 ──▶ Caddy (:443 HTTPS) ──▶ Go Server (:8080) ──▶ OpenClaw (:18789) ──▶ DeepSeek API (stream)
+  │           │ ↕ wss              │    │
+  │           └ :80 → 301 HTTPS    │    └── MySQL (127.0.0.1:3306)
+  └── WebSocket ──────────────────┘
 ```
 
 ## 技术栈
@@ -20,7 +20,8 @@
 | AI 模型 | DeepSeek V4 Pro（OpenAI 兼容接口，SSE 流式） |
 | 前端 | 原生 HTML/CSS/JS（零依赖） |
 | 数据库 | MySQL 8.4 |
-| 反代 | Caddy v2 |
+| 反代 | Caddy v2（HTTPS + HTTP→HTTPS 强制跳转） |
+| SSL | DigiCert（fengyin.xin / www.fengyin.xin） |
 | 认证 | bcrypt + Session Cookie |
 | 部署 | systemd, 阿里云 ECS (Ubuntu 26.04) |
 

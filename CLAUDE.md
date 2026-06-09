@@ -7,9 +7,8 @@ Go 后端 + 原生前端 + MySQL 的 AI 聊天应用，部署在阿里云 ECS `4
 ## 架构
 
 ```
-浏览器 → Caddy (:80) → Go Server (:8080) → OpenClaw (:18789) → DeepSeek API (stream)
-  ↕ WebSocket          ↕ cn.bing.com (搜索)
-                       ↕ MySQL (127.0.0.1:3306)
+浏览器 → Caddy (:443 HTTPS) → Go Server (:8080) → OpenClaw (:18789) → DeepSeek API (stream)
+  ↕ wss     :80 → 301        ↕ MySQL (127.0.0.1:3306)
 ```
 
 ## 技术栈
@@ -22,7 +21,8 @@ Go 后端 + 原生前端 + MySQL 的 AI 聊天应用，部署在阿里云 ECS `4
 | 搜索 | Bing 内置（cn.bing.com HTML 抓取） / Serper.dev / 自定义 API |
 | 前端 | 原生 HTML/CSS/JS，零依赖 |
 | 数据库 | MySQL 8.4, InnoDB, utf8mb4, 仅 127.0.0.1 |
-| 反代 | Caddy v2 |
+| 反代 | Caddy v2（HTTPS :443 + HTTP→HTTPS 强制跳转） |
+| SSL | DigiCert `/ssl/fengyin.xin.pem` + `/ssl/fengyin.xin.key`（fengyin.xin / www） |
 | 认证 | bcrypt (cost=12) + Session Cookie (HttpOnly, SameSite=Lax) |
 | 部署 | systemd, EnvironmentFile=/opt/chat-assistant/.env (chmod 600) |
 
@@ -72,12 +72,15 @@ ssh -Nf -L 18789:127.0.0.1:18789 root@47.95.244.175  # 建立隧道
 | 项目 | 值 |
 |------|-----|
 | IP | 47.95.244.175 |
+| 域名 | fengyin.xin / www.fengyin.xin（HTTPS） |
 | 系统 | Ubuntu 26.04 LTS |
 | 内存 | 1.6 GB |
 | Go 服务 | systemd: `chat-assistant.service` |
+| OpenClaw | systemd: `openclaw.service`（:18789 loopback） |
 | 数据库 | MySQL 8.4, `chat_app@localhost` |
 | 环境变量 | `/opt/chat-assistant/.env` (chmod 600) |
 | 部署路径 | `/opt/chat-assistant/` |
+| SSL 证书 | `/ssl/fengyin.xin.pem` + `/ssl/fengyin.xin.key` |
 
 ## WebSocket 协议
 
@@ -113,6 +116,6 @@ ssh -Nf -L 18789:127.0.0.1:18789 root@47.95.244.175  # 建立隧道
 - **环境变量**：通过 `.env` 文件注入，systemd `EnvironmentFile` 读取
 - **会话超时**：10 分钟无操作自动过期
 - **会话上限**：每用户最多 3 个会话
-- **搜索**：不配任何 Key 时自动用内置 Bing（零配置可用）
+- **HTTPS**：HTTP :80 全部 301 跳转 HTTPS，WebSocket 自动 wss://
 - **OpenClaw 路由**：`OPENCLAW_ENABLED=true` 走网关，未配或 token 为空自动回退直连 DeepSeek
 - **OpenClaw Session**：`User` 字段 `{username}-conv-{conversationID}` 保证会话一致性
