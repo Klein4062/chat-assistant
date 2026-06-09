@@ -40,6 +40,7 @@
 - [x] 连接状态 Toast 通知（断线警告 + 重连成功）
 - [x] 自动重连（指数退避，断开时立即重连）
 - [x] 深色主题 + 响应式布局
+- [x] **HTTPS**（fengyin.xin + DigiCert SSL 证书）
 - [x] systemd 守护 + 开机自启
 
 ## 快速开始
@@ -183,7 +184,7 @@ systemctl restart chat-assistant
 - [x] 多会话管理（MySQL 持久化，最多 3 个）
 - [x] 联网搜索（Bing 内置免费，零配置）
 - [x] OpenClaw AI Agent 网关集成 + Session 同步
+- [x] HTTPS + 域名绑定（fengyin.xin）
 - [ ] Markdown 渲染 + 代码高亮
-- [ ] HTTPS + 域名绑定
 - [ ] Docker 化
 - [ ] 多通道接入（Telegram / 微信 / 飞书等，通过 OpenClaw）

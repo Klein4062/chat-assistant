@@ -630,6 +630,17 @@ created_at DATETIME
 - ✅ OpenClaw session 上下文保持正常
 - ✅ token 消耗显著减少
 
+### 2026-06-10 — HTTPS 启用（fengyin.xin）
+
+**新增：**
+- 上传 DigiCert SSL 证书到 `/ssl/`，Caddy 配置 HTTPS
+- `fengyin.xin` 域名监听 443 + HTTP→HTTPS 永久重定向
+- 绑定 eth0 IP 解决 Tailscale 端口冲突
+- 前端 WebSocket 自适配 `wss://`，无需修改
+
+**Caddyfile:** `tls /ssl/fengyin.xin.combined /ssl/fengyin.xin.key` + `reverse_proxy localhost:8080`
+**验证:** ✅ `https://fengyin.xin/` 外部可访问 ✅ HTTP 301 跳转 ✅ 证书链完整
+
 ## 当前功能
 
 - [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）
@@ -646,6 +657,7 @@ created_at DATETIME
 - [x] 深色主题 UI
 - [x] 用户登录/登出（bcrypt + Session Cookie）
 - [x] 受保护路由（未登录自动跳转登录页）
+- [x] **HTTPS**（fengyin.xin + DigiCert SSL）
 - [x] 远程 OpenClaw 控制台（SSH 隧道）
 
 - [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）
