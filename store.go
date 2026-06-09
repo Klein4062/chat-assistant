@@ -297,6 +297,36 @@ func (app *App) renameConversation(id int64, username, title string) error {
 	return nil
 }
 
+// ═══════════════════════════════════════════════════════════════
+// OpenClaw Session 映射存储（内存）
+// ═══════════════════════════════════════════════════════════════
+
+// newOpenClawSessionStore 创建 OpenClaw session 映射存储。
+func newOpenClawSessionStore() *OpenClawSessionStore {
+	return &OpenClawSessionStore{sessions: make(map[int64]string)}
+}
+
+// Get 获取会话对应的 OpenClaw session key。
+func (oss *OpenClawSessionStore) Get(convID int64) string {
+	oss.mu.RLock()
+	defer oss.mu.RUnlock()
+	return oss.sessions[convID]
+}
+
+// Set 设置会话对应的 OpenClaw session key。
+func (oss *OpenClawSessionStore) Set(convID int64, key string) {
+	oss.mu.Lock()
+	oss.sessions[convID] = key
+	oss.mu.Unlock()
+}
+
+// Delete 删除会话的 OpenClaw session 映射。
+func (oss *OpenClawSessionStore) Delete(convID int64) {
+	oss.mu.Lock()
+	delete(oss.sessions, convID)
+	oss.mu.Unlock()
+}
+
 // loadMessages 加载会话消息（先验证所有权）。
 func (app *App) loadMessages(convID int64, username string) ([]ChatMessage, error) {
 	var owner string

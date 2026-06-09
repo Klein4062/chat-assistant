@@ -69,11 +69,12 @@ type ChatMessage struct {
 	Content string `json:"content"` // 消息文本
 }
 
-// ChatCompletionRequest 是发送给 DeepSeek API 的请求体。
+// ChatCompletionRequest 是发送给 DeepSeek/OpenClaw API 的请求体。
 type ChatCompletionRequest struct {
 	Model        string        `json:"model"`
 	Messages     []ChatMessage `json:"messages"`
 	Stream       bool          `json:"stream"`
+	User         string        `json:"user,omitempty"`          // OpenClaw session 标识（username:convID）
 	EnableSearch bool          `json:"enable_search,omitempty"` // DeepSeek 原生搜索（备用）
 }
 
@@ -160,15 +161,23 @@ type ConversationStore struct {
 	db       *sql.DB                 // MySQL 连接
 }
 
+// OpenClawSessionStore 维护 chat-assistant conversationID → OpenClaw gateway session key 映射。
+// 确保同一会话的所有消息发送到同一 OpenClaw session，实现上下文连续。
+type OpenClawSessionStore struct {
+	mu       sync.RWMutex
+	sessions map[int64]string // conversationID → openclawSessionKey
+}
+
 // ─── 应用全局状态 ──────────────────────────────────────────────
 
 // App 持有所有共享状态。
 type App struct {
-	hub           *Hub
-	users         *UserStore
-	sessions      *SessionStore
-	conversations *ConversationStore
-	db            *sql.DB
+	hub              *Hub
+	users            *UserStore
+	sessions         *SessionStore
+	conversations    *ConversationStore
+	openclawSessions *OpenClawSessionStore // OpenClaw session 映射
+	db               *sql.DB
 }
 
 // ─── DeepSeek 配置 ─────────────────────────────────────────────
@@ -178,4 +187,12 @@ var (
 	deepseekBaseURL string // API 基础地址
 	deepseekModel   string // 模型名称
 	systemPrompt    string // 系统提示词
+)
+
+// ─── OpenClaw 集成 ─────────────────────────────────────────────
+
+var (
+	openclawEnabled   bool   // 是否启用 OpenClaw 网关路由
+	openclawBaseURL   string // OpenClaw 网关地址（默认 http://127.0.0.1:18789）
+	openclawAuthToken string // OpenClaw 网关鉴权令牌
 )

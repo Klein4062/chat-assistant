@@ -37,27 +37,42 @@ func initDeepSeek() {
 		deepseekModel = "deepseek-chat"
 	}
 
-	systemPrompt = `你是 AI 助手，一个有帮助、友好的智能助理。请用简洁清晰的中文回答问题。`
+	systemPrompt = `你是 AI 助手，有帮助、友好的智能助理。用简洁中文回答。
+
+你有联网搜索能力。当系统提示中包含搜索结果时，直接引用并标来源 [1][2]。
+不要建议用户"开启联网搜索"——你就是联网的。
+被问"你能联网吗"直接说"能"。
+不要复述搜索结果原文，直接基于它们回答。`
 }
 
 // callDeepSeekStream 调用 DeepSeek API 进行流式对话。
 // - history: 对话历史（不含 system prompt）
-// - enableSearch: 是否传递搜索参数给 DeepSeek（备用，实际搜索由 search.go 处理）
+// - searchResults: 搜索结果（nil 表示未启用搜索），合并到 system prompt 中
 // - sendChunk: 每个文本增量调用的回调
 // - onSearchResults: DeepSeek 返回搜索结果时的回调（备用）
-func callDeepSeekStream(history []ChatMessage, enableSearch bool, sendChunk func(string) error, onSearchResults func([]SearchResult)) error {
+func callDeepSeekStream(history []ChatMessage, searchResults []SearchResult, sendChunk func(string) error, onSearchResults func([]SearchResult)) error {
 	if deepseekAPIKey == "" {
 		sendChunk("（AI 服务未配置 — 请设置 DEEPSEEK_API_KEY）")
 		return nil
 	}
 
+	// 构建 system prompt：基础 prompt + 搜索结果（如有）
+	prompt := systemPrompt
+	if len(searchResults) > 0 {
+		prompt = buildSearchPrompt(systemPrompt, searchResults)
+	} else if searchResults != nil {
+		// 搜索已执行但无结果：告诉 AI 诚实承认，不要编造
+		prompt = systemPrompt + "\n\n---\n你刚才尝试联网搜索但未获取到任何结果。" +
+			"请如实告知用户搜索未找到相关信息，不要编造具体数据或日期。" +
+			"可以建议用户换关键词重试，或调整搜索范围。"
+	}
+
 	// 组装请求：system prompt + 对话历史
-	messages := append([]ChatMessage{{Role: "system", Content: systemPrompt}}, history...)
+	messages := append([]ChatMessage{{Role: "system", Content: prompt}}, history...)
 	reqBody := ChatCompletionRequest{
-		Model:        deepseekModel,
-		Messages:     messages,
-		Stream:       true,
-		EnableSearch: enableSearch,
+		Model:    deepseekModel,
+		Messages: messages,
+		Stream:   true,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)

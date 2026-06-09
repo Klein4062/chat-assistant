@@ -388,9 +388,10 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 				history = nil
 			}
 
-			// 4. 如果启用联网搜索，先搜索再注入上下文
+			// 4. 如果启用联网搜索，先搜索
+			var searchResults []SearchResult
 			if msg.EnableSearch {
-				searchResults := searchWeb(msg.Content)
+				searchResults = searchWeb(msg.Content)
 				if len(searchResults) > 0 {
 					// 将搜索结果发送给前端展示
 					searchMsg, _ := json.Marshal(Message{
@@ -402,17 +403,22 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 						Timestamp:      time.Now().UTC().Format(time.RFC3339),
 					})
 					client.Send <- searchMsg
-
-					// 将搜索结果注入对话上下文
-					history = buildSearchContext(history, searchResults)
 					log.Printf("[%s] 搜索: %d 条结果 ← %q", client.Username, len(searchResults), truncate(msg.Content, 40))
+				} else {
+					// 搜索无结果：告知前端，并让 AI 诚实承认
+					client.Send <- searchMsgNoResults(convID)
+					searchResults = nil // 不传给 AI，避免编造
+					log.Printf("[%s] 搜索无结果: %q", client.Username, truncate(msg.Content, 40))
 				}
 			}
 
-			// 5. 调用 DeepSeek API 流式生成回复
+			// 5. 调用 DeepSeek API 流式生成回复（搜索结果合并到 system prompt）
 			var aiContent string
-			enableSearch := msg.EnableSearch
-			err = callDeepSeekStream(history, enableSearch,
+			// 搜索已启用但无结果时，传递空切片让 AI 知道搜索确实执行了但没找到
+			if msg.EnableSearch && len(searchResults) == 0 {
+				searchResults = []SearchResult{} // 空切片 ≠ nil，触发"无结果"提示
+			}
+			err = callDeepSeekStream(history, searchResults,
 				// sendChunk: 每个文本块推送给前端
 				func(chunk string) error {
 					aiContent += chunk
@@ -508,6 +514,19 @@ func (app *App) serveStatic(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════
 // 工具函数
 // ═══════════════════════════════════════════════════════════════
+
+// searchMsgNoResults 构造搜索无结果的通知消息。
+func searchMsgNoResults(convID int64) []byte {
+	msg, _ := json.Marshal(Message{
+		Type:           "search_results",
+		Content:        "[]",
+		Sender:         "server",
+		Username:       "AI",
+		ConversationID: convID,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+	})
+	return msg
+}
 
 // writeJSON 写入 JSON 响应。
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

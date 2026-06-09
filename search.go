@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,17 @@ import (
 	"strings"
 	"time"
 )
+
+// bingClient 模拟浏览器行为：强制 HTTP/1.1，避免 TLS 指纹被识别为爬虫。
+var bingClient = &http.Client{
+	Timeout: 12 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+		ForceAttemptHTTP2: false, // 强制 HTTP/1.1
+	},
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 联网搜索 — 多后端 fallback
@@ -108,14 +120,25 @@ func searchCustomAPI(query, apiURL string) []SearchResult {
 
 // searchBing 从 cn.bing.com 抓取搜索结果 HTML 并解析。
 func searchBing(query string) []SearchResult {
-	searchURL := fmt.Sprintf("https://cn.bing.com/search?q=%s&count=10", url.QueryEscape(query))
+	// 中文查询：去口语虚词 + site: 限定中文内容源
+	q := query
+	if containsCJK(query) {
+		// 去掉干扰词：几号、如何、怎么、吗、呢、吧、啊、请、帮我等
+		q = cleanQuery(query)
+		q = "site:bilibili.com " + q
+	}
+	searchURL := fmt.Sprintf("https://cn.bing.com/search?q=%s&count=10&setlang=zh-cn", url.QueryEscape(q))
 
 	req, _ := http.NewRequest("GET", searchURL, nil)
-	// 模拟浏览器 User-Agent，避免被反爬
+	// 完整模拟浏览器请求头，防止 Bing 通过 TLS 指纹识别为爬虫
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	req.Header.Set("DNT", "1")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
 
-	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	resp, err := bingClient.Do(req)
 	if err != nil {
 		log.Printf("Bing 搜索失败: %v", err)
 		return nil
@@ -128,6 +151,11 @@ func searchBing(query string) []SearchResult {
 	}
 
 	results := parseBingResults(string(body))
+	// DEBUG: save HTML for analysis
+	if len(results) == 0 && len(body) > 100 {
+		os.WriteFile("/tmp/bing-debug.html", body, 0644)
+		log.Printf("Bing HTML saved to /tmp/bing-debug.html (%d bytes)", len(body))
+	}
 	if len(results) > 0 {
 		log.Printf("Bing 搜索: %d 条结果 ← %q", len(results), truncate(query, 50))
 	}
@@ -196,6 +224,32 @@ func parseBingResults(html string) []SearchResult {
 // 工具函数
 // ═══════════════════════════════════════════════════════════════
 
+// cleanQuery 去除中文口语虚词，提取搜索关键词。
+// "今天几号，北京天气如何" → "今天 北京天气"
+func cleanQuery(q string) string {
+	// 口语虚词/干扰词——长词优先，避免"怎么"误删"怎么样"的残留
+	noise := []string{"怎么样", "能不能", "可不可以", "怎么", "几号", "如何",
+		"请", "帮我", "可以", "能否", "麻烦", "一下", "谢谢",
+		"吗", "呢", "吧", "啊", "呀", "哦"}
+	for _, w := range noise {
+		q = strings.ReplaceAll(q, w, "")
+	}
+	// 去掉多余空格和标点
+	q = strings.TrimSpace(q)
+	q = regexp.MustCompile(`[，。！？、；：""''【】《》（）\s]+`).ReplaceAllString(q, " ")
+	return strings.TrimSpace(q)
+}
+
+// containsCJK 判断字符串是否包含中日韩统一表意文字。
+func containsCJK(s string) bool {
+	for _, r := range s {
+		if (r >= 0x4E00 && r <= 0x9FFF) || (r >= 0x3400 && r <= 0x4DBF) {
+			return true
+		}
+	}
+	return false
+}
+
 // stripTags 移除 HTML 标签，保留纯文本。
 func stripTags(s string) string {
 	return regexp.MustCompile(`<[^>]*>`).ReplaceAllString(s, "")
@@ -225,19 +279,16 @@ func toSearchResultsJSON(results []SearchResult) string {
 	return string(b)
 }
 
-// buildSearchContext 将搜索结果拼接为一条用户消息，注入对话上下文。
-// 这样 AI 能基于搜索内容回答，并自然引用来源。
-func buildSearchContext(history []ChatMessage, results []SearchResult) []ChatMessage {
+// buildSearchPrompt 将搜索结果拼接到 system prompt 尾部。
+func buildSearchPrompt(basePrompt string, results []SearchResult) string {
 	var sb strings.Builder
-	sb.WriteString("以下是从网络搜索到的相关信息，请基于这些信息回答用户问题：\n\n")
+	sb.WriteString(basePrompt)
+	sb.WriteString("\n\n---\n你刚才联网搜索获得了以下结果。直接基于它们回答用户问题，引用时标 [1][2] 等。不要复述或列出搜索结果本身。\n")
 	for i, r := range results {
 		if i >= 5 {
 			break
 		}
-		sb.WriteString(fmt.Sprintf("【%d】%s\n%s\n\n", i+1, r.Title, r.Snippet))
+		sb.WriteString(fmt.Sprintf("[%d] %s | %s\n", i+1, r.Title, r.Snippet))
 	}
-	enhanced := make([]ChatMessage, 0, len(history)+1)
-	enhanced = append(enhanced, ChatMessage{Role: "user", Content: sb.String()})
-	enhanced = append(enhanced, history...)
-	return enhanced
+	return sb.String()
 }

@@ -10,11 +10,14 @@
 ## 技术架构
 
 ```
-┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────────┐
-│  浏览器   │───▶│  Caddy   │───▶│ Go Chat Server │───▶│    MySQL     │
-│ (Chat UI) │◀───│ (Port 80)│◀───│  (Port 8080)  │◀───│ (127.0.0.1)  │
-└──────────┘    └──────────┘    └───────────────┘    └──────────────┘
-  WebSocket      Reverse Proxy   WebSocket + HTTP      仅本地访问
+┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────────┐    ┌──────────────┐
+│  浏览器   │───▶│  Caddy   │───▶│ Go Chat Server │───▶│  OpenClaw    │───▶│  DeepSeek    │
+│ (Chat UI) │◀───│ (Port 80)│◀───│  (Port 8080)  │◀───│(127.0.0.1:   │◀───│   API (SSE)  │
+└──────────┘    └──────────┘    └───────────────┘    │   18789)     │    └──────────────┘
+  WebSocket      Reverse Proxy   WebSocket + HTTP     │  AI Agent   │
+                                                      │  Gateway    │
+                                                      └─────────────┘
+                                                      ↑ SSH 隧道远程控制台
 ```
 
 ### 技术栈
@@ -40,6 +43,13 @@
 ├── main.go                     # 后端源码 (Go)
 ├── go.mod                      # Go 模块定义
 └── DEVLOG.md                   # 本文件
+
+/root/.openclaw/                # OpenClaw 配置
+└── openclaw.json               # 模型/网关/Agent 配置
+
+/etc/systemd/system/
+├── chat-assistant.service      # Go 后端守护
+└── openclaw.service            # OpenClaw 网关守护
 ```
 
 ## 消息协议
@@ -481,7 +491,137 @@ created_at DATETIME
 - 新增 `CLAUDE.md` AI Agent 开发指南
 - 更新 `README.md` 架构图和开发计划
 
+### 2026-06-08 — 联网搜索 Bug 修复：AI 联网认知 + Bing 中文搜索质量
+
+**问题诊断（5个Bug）：**
+
+| # | 表现 | 根因 |
+|---|------|------|
+| 1 | AI 说"我没联网" | 搜索结果作为独立 `system` 消息注入，被 DeepSeek 忽略 |
+| 2 | AI 编造天气数据+日期 | 搜索返回 0 结果时 AI 仍自信虚构，且标注虚假来源 [1][2] |
+| 3 | AI "请开启联网搜索" | system prompt 未定义搜索行为 |
+| 4 | Bing 返回英文垃圾 | Go HTTP 客户端 TLS 指纹被 Bing 识别为爬虫 |
+| 5 | "几号"搜索→黄历结果 | 中文口语虚词（几号/如何/怎么样）误导 Bing 分词 |
+
+**修复:**
+
+| # | 修复 | 文件 |
+|---|------|------|
+| 1 | `buildSearchPrompt()` 拼接到 system prompt 尾部，单一 system 消息 | `search.go` |
+| 2 | 搜索无结果→prompt 追加"不要编造数据或日期"，AI 诚实说不知道 | `main.go` / `handlers.go` |
+| 3 | system prompt：`你是联网的 / 不要建议开启联网搜索` | `main.go` |
+| 4 | 强制 HTTP/1.1 + 完整浏览器 headers（Accept/Accept-Language/DNT） | `search.go` |
+| 5 | `cleanQuery()` 过滤口语虚词（长词优先：怎么样→怎么→几号→如何→吗/呢/吧） | `search.go` |
+| — | `site:bilibili.com` 限定中文内容源，防止 Bing 返回英文结果 | `search.go` |
+
+**已知限制:**
+- ⚠️ Bing 免费抓取存在 IP 限流/封禁风险（频繁请求触发）
+- 推荐方案：注册 Serper.dev 免费 Key（Google 搜索，100次/月，国内可达）→ 设 `SERPER_API_KEY` 环境变量即可切换
+
+**验证结果:**
+- ✅ AI 被问"你能联网吗"→回答"能，我支持联网搜索"（不再说"请手动开启"）
+- ✅ 搜索无结果时 AI 诚实说"抱歉，无法获取"（不再虚构数据和日期）
+- ✅ 天气查询成功获取过实时结果（带来源引用 [1][2]）
+- ✅ `cleanQuery("今天几号，北京天气如何")` → `"今天 北京天气"` 正确过滤
+
+### 2026-06-09 — OpenClaw AI Agent 网关集成
+
+**背景：** 直接调用 DeepSeek API 缺少 Agent 能力层（技能、工具、记忆、多通道）。引入 OpenClaw 作为 AI 网关，chat-assistant 通过 OpenClaw 调用后端模型，未来可自然扩展 Telegram/微信等多通道接入。
+
+**新增功能:**
+- 部署 OpenClaw 2026.6.1（npm 全局安装），独立 systemd 服务
+- DeepSeek V4 Pro 作为 OpenClaw 后端模型（`deepseek/deepseek-chat`）
+- Go 后端新增 OpenClaw 路由：`OPENCLAW_ENABLED=true` 时通过网关调用 AI
+- 开启 OpenAI 兼容 HTTP API（`POST /v1/chat/completions`），SSE 流式同格式零改动
+- OpenClaw session 与 chat-assistant 会话同步：同一会话复用同一 OpenClaw session
+- 删除 chat-assistant 会话时同步关闭 OpenClaw session
+- 未配置时自动回退直连 DeepSeek（零影响）
+
+**架构变更:**
+
+```
+变更前:  Browser → Caddy(:80) → Go(:8080) → DeepSeek API
+变更后:  Browser → Caddy(:80) → Go(:8080) → OpenClaw(:18789) → DeepSeek API
+                                               ↑ loopback only
+                                          SSH 隧道远程访问控制台
+```
+
+**技术细节:**
+
+| 层面 | 实现 |
+|------|------|
+| OpenClaw 安装 | `npm install -g openclaw@latest`，systemd 守护 |
+| 模型配置 | `models.providers.deepseek` → `api.openai-completions`，API Key 通过 env 注入 |
+| Go 路由开关 | `OPENCLAW_ENABLED`、`OPENCLAW_BASE_URL`、`OPENCLAW_AUTH_TOKEN` 环境变量 |
+| Session 同步 | `ChatCompletionRequest.User` 字段 `{username}-conv-{conversationID}` + `x-openclaw-session-key` header |
+| 会话关闭 | `DELETE /v1/sessions/{key}` 在删除会话时调用 |
+| 远程控制台 | SSH 隧道 `ssh -Nf -L 18789:127.0.0.1:18789 root@47.95.244.175` |
+
+**新增文件:**
+
+| 文件 | 说明 |
+|------|------|
+| `/etc/systemd/system/openclaw.service` | OpenClaw 守护进程 |
+| `/root/.openclaw/openclaw.json` | OpenClaw 配置（模型/网关/Agent） |
+
+**Go 代码变更:**
+
+| 文件 | 改动 |
+|------|------|
+| `models.go` | 新增 `OpenClawSessionStore`、`App.openclawSessions`、`ChatCompletionRequest.User` |
+| `main.go` | 新增 `initOpenClaw()`、`callOpenClawStream()`、`closeOpenClawSession()` |
+| `store.go` | 新增 `newOpenClawSessionStore()` / `Get` / `Set` / `Delete` |
+| `handlers.go` | WS 消息路由走 OpenClaw，删除会话时同步关闭 OpenClaw session |
+
+**环境变量新增:**
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `OPENCLAW_ENABLED` | `false` | 是否启用 OpenClaw 网关路由 |
+| `OPENCLAW_BASE_URL` | `http://127.0.0.1:18789` | OpenClaw 网关地址 |
+| `OPENCLAW_AUTH_TOKEN` | (必填) | 网关鉴权令牌 |
+
+**回退机制：** `OPENCLAW_ENABLED != true` 或 `OPENCLAW_AUTH_TOKEN` 为空时，自动使用 `callDeepSeekStream` 直连，完全兼容已有行为。
+
+**内存占用:**
+
+| 进程 | 内存 |
+|------|------|
+| OpenClaw | ~168 MB |
+| chat-server | ~20 MB |
+| MySQL | ~200 MB |
+| Caddy | ~30 MB |
+| **总计** | **~420 MB / 1.6 GB** |
+
+**验证结果:**
+- ✅ OpenClaw 安装 + systemd 开机自启
+- ✅ `curl http://127.0.0.1:18789/healthz` → `{"ok":true}`
+- ✅ OpenClaw API 调用 DeepSeek 返回正常
+- ✅ SSE 流式响应格式与 DeepSeek 完全兼容
+- ✅ Session 一致性：同一 `user` 字段多轮对话保持上下文
+- ✅ `cached_tokens` 命中率接近 100%（同 session 重复 prompt 前缀）
+- ✅ chat-assistant 删除会话 → OpenClaw session 同步关闭
+- ✅ `OPENCLAW_ENABLED=false` 时回退直连 DeepSeek（日志: "OpenClaw 未启用，使用直连 DeepSeek"）
+- ✅ SSH 隧道远程访问 OpenClaw 控制台正常
+
 ## 当前功能
+
+- [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）
+- [x] 多会话管理（最多 3 个，MySQL 持久化，登出保留）
+- [x] 会话切换、重命名、删除 + 聊天记录持久化
+- [x] ~~服务端 Echo 回显~~ → DeepSeek V4 Pro AI 对话
+- [x] **OpenClaw AI Agent 网关集成**（Agent 能力层 + 多通道扩展基础）
+- [x] **OpenClaw Session 同步**（会话创建/复用/关闭与 chat-assistant 一致）
+- [x] 连接状态指示器
+- [x] 断线消息队列 + Toast 通知
+- [x] 自动重连（指数退避，发送消息时立即重连）
+- [x] 响应式设计（移动端适配）
+- [x] Enter 发送、Shift+Enter 换行
+- [x] 深色主题 UI
+- [x] **🔍 联网搜索**（Bing 内置 + Serper.dev + 自定义 API，零配置可用）
+- [x] 用户登录/登出（bcrypt + Session Cookie）
+- [x] 受保护路由（未登录自动跳转登录页）
+- [x] 远程 OpenClaw 控制台（SSH 隧道）
 
 - [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）
 - [x] 多会话管理（最多 3 个，MySQL 持久化，登出保留）
@@ -509,6 +649,7 @@ created_at DATETIME
 - [x] ~~消息持久化~~ → MySQL 8.4 已部署，待 Go 后端接入
 - [x] ~~多会话管理~~ → MySQL 持久化 + 侧边栏 UI
 - [x] ~~联网搜索~~ → Bing 内置 + Serper.dev + 自定义 API，零配置可用
+- [x] ~~OpenClaw AI Agent 网关~~ → Agent 能力层 + Session 同步 + 多通道扩展基础
 - [ ] Markdown 渲染 + 代码高亮
 - [ ] 消息编辑 / 删除
 - [ ] 文件上传（图片等）
@@ -519,6 +660,7 @@ created_at DATETIME
 - [ ] 速率限制
 - [ ] Docker 化部署
 - [ ] CI/CD 自动部署
+- [ ] 多通道接入（Telegram / 微信 / 飞书等，通过 OpenClaw）
 
 ## 维护命令
 

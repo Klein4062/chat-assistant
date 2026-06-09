@@ -5,10 +5,10 @@
 ## 架构
 
 ```
-浏览器 ──▶ Caddy (:80) ──▶ Go Server (:8080) ──▶ MySQL (127.0.0.1:3306)
+浏览器 ──▶ Caddy (:80) ──▶ Go Server (:8080) ──▶ OpenClaw (:18789) ──▶ DeepSeek API (stream)
   │                           │    │    │
-  └── WebSocket ──────────────┘    │    └── DeepSeek API (stream)
-                                   └── cn.bing.com (联网搜索)
+  └── WebSocket ──────────────┘    │    └── cn.bing.com (联网搜索)
+                                   └── MySQL (127.0.0.1:3306)
 ```
 
 ## 技术栈
@@ -16,7 +16,8 @@
 | 层级 | 技术 |
 |------|------|
 | 后端 | Go 1.25, gorilla/websocket |
-| AI | DeepSeek V4 Pro（OpenAI 兼容接口，SSE 流式） |
+| AI 网关 | OpenClaw 2026.6.1（Agent 能力层 + 模型路由） |
+| AI 模型 | DeepSeek V4 Pro（OpenAI 兼容接口，SSE 流式） |
 | 前端 | 原生 HTML/CSS/JS（零依赖） |
 | 数据库 | MySQL 8.4 |
 | 反代 | Caddy v2 |
@@ -25,8 +26,10 @@
 
 ## 功能
 
+- [x] **OpenClaw AI Agent 网关**：Agent 能力层 + 模型路由 + 多通道扩展基础
 - [x] **DeepSeek V4 Pro AI 对话**，流式逐字输出
 - [x] **多会话管理**：最多 3 个，MySQL 持久化，登出/重登不丢失，切换/重命名/删除
+- [x] **Session 同步**：chat-assistant 会话 ↔ OpenClaw session 一对一，创建/复用/关闭同步
 - [x] 对话上下文管理（每会话独立，最近 20 轮）
 - [x] WebSocket 实时通信（多客户端广播）+ 30s Ping 保活
 - [x] 用户登录/登出（bcrypt 密码哈希）
@@ -142,12 +145,15 @@ chat-assistant/
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `DEEPSEEK_API_KEY` | (必填) | DeepSeek API 密钥 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 地址 |
+| `DEEPSEEK_API_KEY` | (必填) | DeepSeek API 密钥（OpenClaw 使用，直连回退时也使用） |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API 地址（直连回退用） |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名称 |
-| `MYSQL_DSN` | (必填) | MySQL 连接串 `user:pass@tcp(127.0.0.1:3306)/chat_assistant?parseTime=true` |
-| `SERPER_API_KEY` | (可选) | Serper.dev Google 搜索 Key，免费注册 https://serper.dev |
-| `SEARCH_API_URL` | (可选) | 自定义搜索端点（SearXNG/DuckDuckGo 兼容） |
+| `MYSQL_DSN` | (必填) | MySQL 连接串 |
+| `OPENCLAW_ENABLED` | `false` | 是否启用 OpenClaw 网关路由 |
+| `OPENCLAW_BASE_URL` | `http://127.0.0.1:18789` | OpenClaw 网关地址 |
+| `OPENCLAW_AUTH_TOKEN` | (必填) | OpenClaw 网关鉴权令牌 |
+| `SERPER_API_KEY` | (可选) | Serper.dev Google 搜索 Key |
+| `SEARCH_API_URL` | (可选) | 自定义搜索端点 |
 
 所有密钥存储在服务器 `/opt/chat-assistant/.env`（权限 600），systemd 通过 `EnvironmentFile` 注入。
 
@@ -176,7 +182,8 @@ systemctl restart chat-assistant
 - [x] 接入 DeepSeek API，流式对话
 - [x] 多会话管理（MySQL 持久化，最多 3 个）
 - [x] 联网搜索（Bing 内置免费，零配置）
+- [x] OpenClaw AI Agent 网关集成 + Session 同步
 - [ ] Markdown 渲染 + 代码高亮
 - [ ] HTTPS + 域名绑定
 - [ ] Docker 化
-- [ ] 多模型切换（Claude, GPT 等）
+- [ ] 多通道接入（Telegram / 微信 / 飞书等，通过 OpenClaw）
