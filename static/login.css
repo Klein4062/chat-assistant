@@ -167,6 +167,20 @@ html, body {
     to { transform: rotate(360deg); }
 }
 
+/* ── ICP 备案号 ────────────────────────────────────────── */
+.icp-footer {
+    text-align: center;
+    padding: 12px;
+}
+.icp-footer a {
+    color: #888;
+    font-size: 12px;
+    text-decoration: none;
+}
+.icp-footer a:hover {
+    color: #aaa;
+}
+
 /* Responsive */
 @media (max-width: 480px) {
     .login-card {

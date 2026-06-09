@@ -672,6 +672,21 @@ html, body {
         font-size: 42px;
     }
 
+/* ── ICP 备案号 ────────────────────────────────────────── */
+.icp-footer {
+    text-align: center;
+    padding: 8px;
+    flex-shrink: 0;
+}
+.icp-footer a {
+    color: var(--text-tertiary, #666);
+    font-size: 12px;
+    text-decoration: none;
+}
+.icp-footer a:hover {
+    color: var(--text-secondary, #999);
+}
+
     .sidebar {
         width: 240px;
     }
