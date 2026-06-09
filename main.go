@@ -75,7 +75,7 @@ func initOpenClaw() {
 // - username + conversationID: 用于 OpenClaw session 一致性（同一会话复用相同 session）
 // - userMessage: 当前用户消息正文
 // OpenClaw 根据 agents.defaults.model.primary 配置路由到后端模型。
-func callOpenClawStream(username string, conversationID int64, app *App, userMessage string, history []ChatMessage, sendChunk func(string) error) error {
+func callOpenClawStream(username string, conversationID int64, app *App, userMessage string, imageURL string, history []ChatMessage, sendChunk func(string) error) error {
 	if !openclawEnabled || openclawAuthToken == "" {
 		// 回退到直连 DeepSeek（需要完整 history）
 		return callDeepSeekStream(history, nil, sendChunk, nil)
@@ -83,21 +83,28 @@ func callOpenClawStream(username string, conversationID int64, app *App, userMes
 
 	// 组装请求：system prompt + 仅当前消息
 	// OpenClaw 通过 session 自行维护上下文，无需每次发送完整历史
-	messages := []ChatMessage{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userMessage},
-	}
-	reqBody := ChatCompletionRequest{
-		Model:    "openclaw/default", // OpenClaw 根据配置路由到实际模型
-		Messages: messages,
-		Stream:   true,
-		User:     fmt.Sprintf("%s-conv-%d", username, conversationID), // 稳定 session 标识
+	var jsonBody []byte
+	if imageURL != "" {
+		// 多模态：图片 + 文本
+		jsonBody = buildMultimodalRequest(systemPrompt, userMessage, imageURL, "openclaw/default", fmt.Sprintf("%s-conv-%d", username, conversationID))
+	} else {
+		messages := []ChatMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userMessage},
+		}
+		reqBody := ChatCompletionRequest{
+			Model:    "openclaw/default",
+			Messages: messages,
+			Stream:   true,
+			User:     fmt.Sprintf("%s-conv-%d", username, conversationID),
+		}
+		var err error
+		jsonBody, err = json.Marshal(reqBody)
+		if err != nil {
+			return fmt.Errorf("序列化请求失败: %w", err)
+		}
 	}
 
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("序列化请求失败: %w", err)
-	}
 
 	httpReq, err := http.NewRequest("POST", openclawBaseURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
@@ -309,6 +316,45 @@ func callDeepSeekStream(history []ChatMessage, searchResults []SearchResult, sen
 	return nil
 }
 
+// buildMultimodalRequest 构造包含图片的多模态请求 JSON。
+// DeepSeek/OpenClaw 使用 OpenAI 兼容的 vision 格式。
+func buildMultimodalRequest(systemPrompt, userMessage, imageURL, model, user string) []byte {
+	// 构建完整 URL（OpenClaw/DeepSeek 需要可访问的公网 URL）
+	fullImageURL := imageURL
+	if strings.HasPrefix(imageURL, "/uploads/") {
+		fullImageURL = "https://fengyin.xin" + imageURL
+	}
+
+	body := map[string]interface{}{
+		"model":  model,
+		"stream": true,
+		"user":   user,
+		"messages": []map[string]interface{}{
+			{
+				"role":    "system",
+				"content": systemPrompt,
+			},
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{
+						"type": "text",
+						"text": userMessage,
+					},
+					{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fullImageURL,
+						},
+					},
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(body)
+	return b
+}
+
 // ═══════════════════════════════════════════════════════════════
 // MySQL 初始化
 // ═══════════════════════════════════════════════════════════════
@@ -379,6 +425,8 @@ func main() {
 	http.HandleFunc("/login", app.handleLogin)
 	http.HandleFunc("/login.css", app.serveStatic)
 	http.HandleFunc("/login.js", app.serveStatic)
+	// 上传的图片公开访问
+	http.HandleFunc("/uploads/", app.serveUpload)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "time": time.Now().UTC().Format(time.RFC3339)})
 	})
@@ -394,6 +442,9 @@ func main() {
 	http.HandleFunc("GET /api/conversations/{id}/messages", app.authMiddleware(app.handleConversationMessages))
 	http.HandleFunc("DELETE /api/conversations/{id}", app.authMiddleware(app.handleDeleteConversation))
 	http.HandleFunc("PUT /api/conversations/{id}", app.authMiddleware(app.handleRenameConversation))
+
+	// 图片上传（需登录）
+	http.HandleFunc("POST /api/upload", app.authMiddleware(app.handleUpload))
 
 	// 受保护路由
 	http.HandleFunc("/ws", app.authMiddleware(app.handleWS))

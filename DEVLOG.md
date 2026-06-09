@@ -643,6 +643,12 @@ created_at DATETIME
 - 禁用 HTTP 协议，所有 `:80` 请求 301 强制跳转 HTTPS
 **验证:** ✅ `https://fengyin.xin/` / `https://www.fengyin.xin/` 外部可访问 ✅ HTTP 301→HTTPS ✅ 证书链完整
 
+### 2026-06-10 — 图片上传 + AI 多模态识别
+
+**新增：** `POST /api/upload` 图片上传（最大 10MB，PNG/JPEG/GIF/WebP），前端 🖼️ 按钮 + 粘贴 + 拖拽，AI 多模态 vision 识别
+**实现：** `buildMultimodalRequest()` 构造 `[{type:text},{type:image_url}]`，`Message.ImageURL` 传递
+**验证:** ✅ 随机文件名存储 ✅ 登录保护 ✅ 预览/移除 ✅ AI 可识别图片内容
+
 ## 当前功能
 
 - [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）

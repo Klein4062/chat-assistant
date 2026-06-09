@@ -1,10 +1,15 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -394,7 +399,7 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 
 			// 4. 调用 AI 流式生成回复（优先走 OpenClaw 网关，否则直连 DeepSeek）
 			var aiContent string
-			err = callOpenClawStream(client.Username, convID, app, msg.Content, history,
+			err = callOpenClawStream(client.Username, convID, app, msg.Content, msg.ImageURL, history,
 				// sendChunk: 每个文本块推送给前端
 				func(chunk string) error {
 					aiContent += chunk
@@ -452,6 +457,11 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 // 静态文件服务
 // ═══════════════════════════════════════════════════════════════
 
+// serveUpload 提供上传图片的公开访问。
+func (app *App) serveUpload(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "./static"+r.URL.Path)
+}
+
 // serveStatic 提供静态文件服务。
 // login.css / login.js / health 为公开访问，其余需登录。
 func (app *App) serveStatic(w http.ResponseWriter, r *http.Request) {
@@ -470,6 +480,65 @@ func (app *App) serveStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, "./static"+path)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 图片上传
+// ═══════════════════════════════════════════════════════════════
+
+// handleUpload 处理图片上传。POST multipart/form-data，字段名 image。
+// 返回 {"url": "/uploads/xxx.png"} 供前端引用。
+func (app *App) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 限制 10 MB
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "文件过大（最大 10 MB）"})
+		return
+	}
+
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请选择图片文件"})
+		return
+	}
+	defer file.Close()
+
+	// 校验文件类型
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "不支持的图片格式（仅 PNG/JPEG/GIF/WebP）"})
+		return
+	}
+
+	// 生成随机文件名
+	b := make([]byte, 16)
+	rand.Read(b)
+	filename := hex.EncodeToString(b) + ext
+
+	// 确保上传目录存在
+	uploadDir := "./static/uploads"
+	os.MkdirAll(uploadDir, 0755)
+
+	dst, err := os.Create(filepath.Join(uploadDir, filename))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "保存文件失败"})
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "写入文件失败"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"url": "/uploads/" + filename})
 }
 
 // ═══════════════════════════════════════════════════════════════

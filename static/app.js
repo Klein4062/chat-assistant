@@ -35,6 +35,7 @@
     let pendingMessage = null;
     let toastTimer = null;
     let currentStreamConvID = null;
+    let uploadedImageURL = null;
 
     // ─── 会话检查：验证登录状态，未登录重定向 ────────────────────
 
@@ -487,10 +488,32 @@
         }
 
         const msg = { type: 'message', content: content, conversation_id: currentConvID };
+        if (uploadedImageURL) {
+            msg.image_url = uploadedImageURL;
+        }
         ws.send(JSON.stringify(msg));
 
         removeWelcome();
-        addMessageBubble(content, 'user', currentUsername, new Date().toISOString());
+        if (uploadedImageURL) {
+            addImageBubble(content, uploadedImageURL, 'user', currentUsername, new Date().toISOString());
+        } else {
+            addMessageBubble(content, 'user', currentUsername, new Date().toISOString());
+        }
+        clearImagePreview();
+    }
+
+    function addImageBubble(content, imageURL, sender, username, timestamp) {
+        const row = document.createElement('div');
+        row.className = `message-row ${sender}`;
+        const avatar = sender === 'user' ? (currentUsername || '?').charAt(0).toUpperCase() : '🤖';
+        let html = `<div class="message-avatar">${avatar}</div><div class="content-wrapper">`;
+        html += `<div class="message-username">${escapeHtml(username)}</div>`;
+        html += `<img src="${escapeHtml(imageURL)}" class="message-image" alt="上传图片" loading="lazy">`;
+        if (content) html += `<div class="message-text">${escapeHtml(content)}</div>`;
+        html += `<div class="message-time">${formatTime(timestamp)}</div></div>`;
+        row.innerHTML = html;
+        messagesContainer.appendChild(row);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
     // ─── 消息气泡渲染 ─────────────────────────────────────────
@@ -623,6 +646,79 @@
         } catch (e) {
             return '';
         }
+    }
+
+    // ─── 图片上传 ─────────────────────────────────────────────
+
+    const imageInput = document.getElementById('imageInput');
+    const uploadButton = document.getElementById('uploadButton');
+    const imagePreview = document.getElementById('imagePreview');
+    const previewImg = document.getElementById('previewImg');
+    const removeImageBtn = document.getElementById('removeImage');
+
+    uploadButton.addEventListener('click', () => imageInput.click());
+
+    imageInput.addEventListener('change', function() {
+        if (this.files && this.files[0]) uploadImage(this.files[0]);
+    });
+
+    // 粘贴图片
+    document.addEventListener('paste', function(e) {
+        if (!currentConvID) return;
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                e.preventDefault();
+                uploadImage(item.getAsFile());
+                break;
+            }
+        }
+    });
+
+    // 拖拽上传
+    messagesContainer.addEventListener('dragover', e => e.preventDefault());
+    messagesContainer.addEventListener('drop', function(e) {
+        e.preventDefault();
+        if (!currentConvID) return;
+        const file = e.dataTransfer?.files?.[0];
+        if (file && file.type.startsWith('image/')) uploadImage(file);
+    });
+
+    async function uploadImage(file) {
+        if (file.size > 10 * 1024 * 1024) {
+            showToast('⚠️ 图片不能超过 10 MB', 'warning', 3000);
+            return;
+        }
+
+        uploadButton.classList.add('uploading');
+        const formData = new FormData();
+        formData.append('image', file);
+
+        try {
+            const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+            const data = await resp.json();
+            if (data.url) {
+                uploadedImageURL = data.url;
+                previewImg.src = data.url;
+                imagePreview.style.display = 'inline-block';
+                messageInput.focus();
+            } else {
+                showToast('⚠️ ' + (data.error || '上传失败'), 'warning', 3000);
+            }
+        } catch (err) {
+            showToast('⚠️ 上传失败：' + err.message, 'warning', 3000);
+        }
+        uploadButton.classList.remove('uploading');
+    }
+
+    removeImageBtn.addEventListener('click', clearImagePreview);
+
+    function clearImagePreview() {
+        uploadedImageURL = null;
+        previewImg.src = '';
+        imagePreview.style.display = 'none';
+        imageInput.value = '';
     }
 
     // ─── Event Listeners ───────────────────────────────────────

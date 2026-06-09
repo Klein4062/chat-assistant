@@ -431,6 +431,59 @@ html, body {
     text-align: right;
 }
 
+/* ── 图片上传 ────────────────────────────────────────── */
+.image-preview {
+    position: relative;
+    display: inline-block;
+    margin: 0 20px 8px;
+    max-width: 200px;
+}
+.image-preview img {
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+.image-preview-remove {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--danger, #e74c3c);
+    color: #fff;
+    border: none;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.upload-button {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+.upload-button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+.upload-button.uploading {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
 /* ── 输入区域 ────────────────────────────────────────── */
 .input-container {
     padding: 16px 20px;
@@ -602,6 +655,17 @@ html, body {
 .toast-success {
     background: linear-gradient(135deg, #2e7d32, #4caf50);
     color: white;
+}
+
+/* ── 消息中的图片 ────────────────────────────────────── */
+.message-image {
+    max-width: 260px;
+    max-height: 260px;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    object-fit: cover;
 }
 
 /* ── 待发送消息标签 ──────────────────────────────────── */

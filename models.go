@@ -29,6 +29,7 @@ type Message struct {
 	Timestamp      string `json:"timestamp,omitempty"`        // ISO8601 时间戳
 	ConversationID int64  `json:"conversation_id,omitempty"`  // 所属会话 ID
 	EnableSearch   bool   `json:"enable_search,omitempty"`    // 是否启用联网搜索
+	ImageURL       string `json:"image_url,omitempty"`        // 图片 URL（上传后返回的地址）
 }
 
 // ─── 登录认证 ──────────────────────────────────────────────────
