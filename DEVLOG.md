@@ -639,7 +639,9 @@ created_at DATETIME
 - 前端 WebSocket 自适配 `wss://`，无需修改
 
 **Caddyfile:** `tls /ssl/fengyin.xin.combined /ssl/fengyin.xin.key` + `reverse_proxy localhost:8080`
-**验证:** ✅ `https://fengyin.xin/` 外部可访问 ✅ HTTP 301 跳转 ✅ 证书链完整
+- 新增 `www.fengyin.xin` 域名支持（证书已含 SAN）
+- 禁用 HTTP 协议，所有 `:80` 请求 301 强制跳转 HTTPS
+**验证:** ✅ `https://fengyin.xin/` / `https://www.fengyin.xin/` 外部可访问 ✅ HTTP 301→HTTPS ✅ 证书链完整
 
 ## 当前功能
 
