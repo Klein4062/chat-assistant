@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -83,26 +84,20 @@ func callOpenClawStream(username string, conversationID int64, app *App, userMes
 
 	// 组装请求：system prompt + 仅当前消息
 	// OpenClaw 通过 session 自行维护上下文，无需每次发送完整历史
-	var jsonBody []byte
-	if imageURL != "" {
-		// 多模态：图片 + 文本
-		jsonBody = buildMultimodalRequest(systemPrompt, userMessage, imageURL, "openclaw/default", fmt.Sprintf("%s-conv-%d", username, conversationID))
-	} else {
-		messages := []ChatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userMessage},
-		}
-		reqBody := ChatCompletionRequest{
-			Model:    "openclaw/default",
-			Messages: messages,
-			Stream:   true,
-			User:     fmt.Sprintf("%s-conv-%d", username, conversationID),
-		}
-		var err error
-		jsonBody, err = json.Marshal(reqBody)
-		if err != nil {
-			return fmt.Errorf("序列化请求失败: %w", err)
-		}
+	// 注：DeepSeek API 不支持图片多模态，图片仅在前端展示
+	messages := []ChatMessage{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userMessage},
+	}
+	reqBody := ChatCompletionRequest{
+		Model:    "openclaw/default",
+		Messages: messages,
+		Stream:   true,
+		User:     fmt.Sprintf("%s-conv-%d", username, conversationID),
+	}
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 
@@ -317,13 +312,37 @@ func callDeepSeekStream(history []ChatMessage, searchResults []SearchResult, sen
 }
 
 // buildMultimodalRequest 构造包含图片的多模态请求 JSON。
-// DeepSeek/OpenClaw 使用 OpenAI 兼容的 vision 格式。
-func buildMultimodalRequest(systemPrompt, userMessage, imageURL, model, user string) []byte {
-	// 构建完整 URL（OpenClaw/DeepSeek 需要可访问的公网 URL）
-	fullImageURL := imageURL
-	if strings.HasPrefix(imageURL, "/uploads/") {
-		fullImageURL = "https://fengyin.xin" + imageURL
+// 图片以 base64 data URL 内联，避免外部 URL 无法访问的问题。
+func buildMultimodalRequest(systemPrompt, userMessage, imagePath, model, user string) []byte {
+	// 读取图片并转 base64
+	imageData, err := os.ReadFile("." + imagePath)
+	if err != nil {
+		// 回退：仅发送文本
+		log.Printf("读取图片失败 %s: %v，回退为纯文本", imagePath, err)
+		b, _ := json.Marshal(ChatCompletionRequest{
+			Model: model,
+			Messages: []ChatMessage{
+				{Role: "system", Content: systemPrompt},
+				{Role: "user", Content: userMessage + "\n（图片未能加载，请直接回复文本）"},
+			},
+			Stream: true,
+			User:   user,
+		})
+		return b
 	}
+
+	// 检测 MIME 类型
+	mimeType := "image/png"
+	switch {
+	case strings.HasSuffix(imagePath, ".jpg") || strings.HasSuffix(imagePath, ".jpeg"):
+		mimeType = "image/jpeg"
+	case strings.HasSuffix(imagePath, ".gif"):
+		mimeType = "image/gif"
+	case strings.HasSuffix(imagePath, ".webp"):
+		mimeType = "image/webp"
+	}
+
+	base64Data := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(imageData)
 
 	body := map[string]interface{}{
 		"model":  model,
@@ -344,7 +363,7 @@ func buildMultimodalRequest(systemPrompt, userMessage, imageURL, model, user str
 					{
 						"type": "image_url",
 						"image_url": map[string]string{
-							"url": fullImageURL,
+							"url": base64Data,
 						},
 					},
 				},
