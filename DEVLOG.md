@@ -604,6 +604,32 @@ created_at DATETIME
 - ✅ `OPENCLAW_ENABLED=false` 时回退直连 DeepSeek（日志: "OpenClaw 未启用，使用直连 DeepSeek"）
 - ✅ SSH 隧道远程访问 OpenClaw 控制台正常
 
+### 2026-06-10 — 移除联网搜索 + OpenClaw 优化
+
+**背景：** 联网搜索结果通过 system prompt 注入，但 OpenClaw Agent 人格会覆盖搜索指令，导致搜索结果无效。同时 OpenClaw 自身维护 session 上下文，无需每次发送完整对话历史。
+
+**改动：**
+
+| 类型 | 文件 | 说明 |
+|------|------|------|
+| 移除 | `index.html` | 删除搜索 Toggle UI（🌐 联网按钮） |
+| 移除 | `app.js` | 删除 `searchEnabled`、搜索 toggle 事件、`search_results` 消息处理、`addSearchResultsBubble()` |
+| 移除 | `style.css` | 删除 `.search-toggle`、`.search-result-*` 全部样式 |
+| 简化 | `handlers.go` | 删除 `searchWeb()` 调用、搜索结果发送、`searchMsgNoResults()` |
+| 简化 | `main.go` | `callOpenClawStream` 移除 `searchResults`/`onSearchResults` 参数，只发 system+当前消息 |
+| 保留 | `search.go` | 文件保留作为参考，不再被调用 |
+
+**OpenClaw 消息优化：**
+- 不再每次发送完整对话历史（OpenClaw session 自行维护上下文）
+- 仅发送 `system prompt` + `当前用户消息`，大幅减少 token 开销
+- 修复空 history 导致发送空消息的 Bug（`userMessage` 独立传参）
+
+**验证结果:**
+- ✅ 输入区干净无搜索按钮
+- ✅ 发送消息 → AI 正常流式回复
+- ✅ OpenClaw session 上下文保持正常
+- ✅ token 消耗显著减少
+
 ## 当前功能
 
 - [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）
@@ -618,7 +644,6 @@ created_at DATETIME
 - [x] 响应式设计（移动端适配）
 - [x] Enter 发送、Shift+Enter 换行
 - [x] 深色主题 UI
-- [x] **🔍 联网搜索**（Bing 内置 + Serper.dev + 自定义 API，零配置可用）
 - [x] 用户登录/登出（bcrypt + Session Cookie）
 - [x] 受保护路由（未登录自动跳转登录页）
 - [x] 远程 OpenClaw 控制台（SSH 隧道）

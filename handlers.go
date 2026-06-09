@@ -235,6 +235,10 @@ func (app *App) handleDeleteConversation(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// 同步关闭 OpenClaw session
+	closeOpenClawSession(app, convID)
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	log.Printf("[%s] 删除会话 %d", username, convID)
 }
@@ -381,44 +385,16 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 			})
 			client.Send <- startMsg
 
-			// 3. 加载对话历史
+			// 3. 加载对话历史（仅用于 DeepSeek 回退）
 			history, err := app.conversations.GetHistory(convID)
 			if err != nil {
 				log.Printf("加载会话 %d 历史失败: %v", convID, err)
 				history = nil
 			}
 
-			// 4. 如果启用联网搜索，先搜索
-			var searchResults []SearchResult
-			if msg.EnableSearch {
-				searchResults = searchWeb(msg.Content)
-				if len(searchResults) > 0 {
-					// 将搜索结果发送给前端展示
-					searchMsg, _ := json.Marshal(Message{
-						Type:           "search_results",
-						Content:        toSearchResultsJSON(searchResults),
-						Sender:         "server",
-						Username:       "AI",
-						ConversationID: convID,
-						Timestamp:      time.Now().UTC().Format(time.RFC3339),
-					})
-					client.Send <- searchMsg
-					log.Printf("[%s] 搜索: %d 条结果 ← %q", client.Username, len(searchResults), truncate(msg.Content, 40))
-				} else {
-					// 搜索无结果：告知前端，并让 AI 诚实承认
-					client.Send <- searchMsgNoResults(convID)
-					searchResults = nil // 不传给 AI，避免编造
-					log.Printf("[%s] 搜索无结果: %q", client.Username, truncate(msg.Content, 40))
-				}
-			}
-
-			// 5. 调用 DeepSeek API 流式生成回复（搜索结果合并到 system prompt）
+			// 4. 调用 AI 流式生成回复（优先走 OpenClaw 网关，否则直连 DeepSeek）
 			var aiContent string
-			// 搜索已启用但无结果时，传递空切片让 AI 知道搜索确实执行了但没找到
-			if msg.EnableSearch && len(searchResults) == 0 {
-				searchResults = []SearchResult{} // 空切片 ≠ nil，触发"无结果"提示
-			}
-			err = callDeepSeekStream(history, searchResults,
+			err = callOpenClawStream(client.Username, convID, app, msg.Content, history,
 				// sendChunk: 每个文本块推送给前端
 				func(chunk string) error {
 					aiContent += chunk
@@ -435,25 +411,10 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 					default:
 					}
 					return nil
-				},
-				// onSearchResults: DeepSeek 原生搜索结果（备用通道）
-				func(results []SearchResult) {
-					searchMsg, _ := json.Marshal(Message{
-						Type:           "search_results",
-						Content:        toSearchResultsJSON(results),
-						Sender:         "server",
-						Username:       "AI",
-						ConversationID: convID,
-						Timestamp:      time.Now().UTC().Format(time.RFC3339),
-					})
-					select {
-					case client.Send <- searchMsg:
-					default:
-					}
 				})
 
 			if err != nil {
-				log.Printf("DeepSeek API 错误 [%s]: %v", client.Username, err)
+				log.Printf("AI API 错误 [%s]: %v", client.Username, err)
 				errMsg, _ := json.Marshal(Message{
 					Type:           "stream_chunk",
 					Content:        fmt.Sprintf("抱歉，AI 服务暂时不可用：%v", err),
@@ -514,19 +475,6 @@ func (app *App) serveStatic(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════
 // 工具函数
 // ═══════════════════════════════════════════════════════════════
-
-// searchMsgNoResults 构造搜索无结果的通知消息。
-func searchMsgNoResults(convID int64) []byte {
-	msg, _ := json.Marshal(Message{
-		Type:           "search_results",
-		Content:        "[]",
-		Sender:         "server",
-		Username:       "AI",
-		ConversationID: convID,
-		Timestamp:      time.Now().UTC().Format(time.RFC3339),
-	})
-	return msg
-}
 
 // writeJSON 写入 JSON 响应。
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

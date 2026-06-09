@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // Chat Assistant — 前端聊天应用
-// 功能：WebSocket 实时通信 / 多会话管理 / 流式渲染 / 联网搜索 / 自动重连
+// 功能：WebSocket 实时通信 / 多会话管理 / 流式渲染 / 自动重连
 // ═══════════════════════════════════════════════════════════════
 (function() {
     'use strict';
@@ -35,7 +35,6 @@
     let pendingMessage = null;
     let toastTimer = null;
     let currentStreamConvID = null;
-    let searchEnabled = false; // conversation_id of active stream
 
     // ─── 会话检查：验证登录状态，未登录重定向 ────────────────────
 
@@ -95,7 +94,7 @@
                 const msg = pendingMessage;
                 pendingMessage = null;
                 updatePendingToSent();
-                ws.send(JSON.stringify({ type: 'message', content: msg, conversation_id: currentConvID, enable_search: searchEnabled }));
+                ws.send(JSON.stringify({ type: 'message', content: msg, conversation_id: currentConvID }));
             }
         };
 
@@ -385,41 +384,10 @@
                 refreshConversationList();
                 break;
 
-            case 'search_results':
-                // Display search result citations
-                try {
-                    const results = JSON.parse(msg.content);
-                    if (results && results.length > 0) {
-                        addSearchResultsBubble(results);
-                    }
-                } catch (e) {}
-                break;
-
             case 'error':
                 showToast('⚠️ ' + msg.content, 'warning', 4000);
                 break;
         }
-    }
-
-    function addSearchResultsBubble(results) {
-        const row = document.createElement('div');
-        row.className = 'message-row server search-results-row';
-        let html = '<div class="message-avatar">🔍</div><div class="content-wrapper">';
-        html += '<div class="message-username">搜索来源</div>';
-        html += '<div class="search-results-list">';
-        results.slice(0, 5).forEach((r, i) => {
-            html += `<a class="search-result-item" href="${escapeHtml(r.url)}" target="_blank" rel="noopener">
-                <span class="search-result-idx">${i + 1}</span>
-                <span class="search-result-text">
-                    <span class="search-result-title">${escapeHtml(r.title)}</span>
-                    <span class="search-result-snippet">${escapeHtml(r.snippet || '')}</span>
-                </span>
-            </a>`;
-        });
-        html += '</div></div>';
-        row.innerHTML = html;
-        messagesContainer.appendChild(row);
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
     async function refreshConversationList() {
@@ -518,7 +486,7 @@
             return;
         }
 
-        const msg = { type: 'message', content: content, conversation_id: currentConvID, enable_search: searchEnabled };
+        const msg = { type: 'message', content: content, conversation_id: currentConvID };
         ws.send(JSON.stringify(msg));
 
         removeWelcome();
@@ -675,14 +643,6 @@
     if (newConvButton) {
         newConvButton.addEventListener('click', function() {
             createConversation();
-        });
-    }
-
-    // Search toggle
-    const searchToggleCheckbox = document.getElementById('searchToggleCheckbox');
-    if (searchToggleCheckbox) {
-        searchToggleCheckbox.addEventListener('change', function() {
-            searchEnabled = this.checked;
         });
     }
 
