@@ -327,7 +327,7 @@ func callDeepSeekStream(history []ChatMessage, searchResults []SearchResult, sen
 // describeImage 获取图片描述。
 // 优先级：VISION_API_KEY(GLM-4V) > VISION_API_URL > HuggingFace > 本地分析。
 func describeImage(imagePath string) string {
-	data, err := os.ReadFile("." + imagePath)
+	data, err := os.ReadFile("./static" + imagePath)
 	if err != nil {
 		log.Printf("读取图片失败 %s: %v", imagePath, err)
 		return ""
