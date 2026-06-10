@@ -80,7 +80,7 @@ func initOpenClaw() {
 // - username + conversationID: 用于 OpenClaw session 一致性（同一会话复用相同 session）
 // - userMessage: 当前用户消息正文
 // OpenClaw 根据 agents.defaults.model.primary 配置路由到后端模型。
-func callOpenClawStream(username string, conversationID int64, app *App, userMessage string, imageURL string, history []ChatMessage, sendChunk func(string) error) error {
+func callOpenClawStream(username string, conversationID int64, app *App, userMessage string, imageURL string, history []ChatMessage, searchResults []SearchResult, searchSummary string, sendChunk func(string) error) error {
 	if !openclawEnabled || openclawAuthToken == "" {
 		// 回退到直连 DeepSeek（需要完整 history）
 		return callDeepSeekStream(history, nil, sendChunk, nil)
@@ -88,6 +88,15 @@ func callOpenClawStream(username string, conversationID int64, app *App, userMes
 
 	// 组装请求：system prompt + 仅当前消息
 	// OpenClaw 通过 session 自行维护上下文，无需每次发送完整历史
+	// 构建 system prompt（含搜索结果）
+	prompt := systemPrompt
+	if len(searchResults) > 0 {
+		prompt = buildSearchPrompt(systemPrompt, searchResults)
+	}
+	if searchSummary != "" {
+		prompt += "\n\n---\n以下是通过联网搜索获取的实时信息，请基于这些信息回答用户：\n" + searchSummary
+	}
+
 	msgContent := userMessage
 	if imageURL != "" {
 		// 发送识别中提示，防止客户端因等待超时断开
@@ -102,7 +111,7 @@ func callOpenClawStream(username string, conversationID int64, app *App, userMes
 		}
 	}
 	messages := []ChatMessage{
-		{Role: "system", Content: systemPrompt},
+		{Role: "system", Content: prompt},
 		{Role: "user", Content: msgContent},
 	}
 	reqBody := ChatCompletionRequest{

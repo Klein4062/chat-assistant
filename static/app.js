@@ -36,6 +36,7 @@
     let toastTimer = null;
     let currentStreamConvID = null;
     let uploadedImageURL = null;
+    let searchEnabled = false;
 
     // ─── 会话检查：验证登录状态，未登录重定向 ────────────────────
 
@@ -393,6 +394,23 @@
                 refreshConversationList();
                 break;
 
+            case 'search_results':
+                try {
+                    const results = JSON.parse(msg.content);
+                    if (results?.length) {
+                        const row = document.createElement('div');
+                        row.className = 'message-row server';
+                        let h = '<div class="message-avatar">🔍</div><div class="content-wrapper"><div class="message-username">搜索来源</div>';
+                        results.slice(0, 5).forEach((r, i) => {
+                            h += `<a class="search-link" href="${escapeHtml(r.url)}" target="_blank">${i+1}. ${escapeHtml(r.title)}</a>`;
+                        });
+                        h += '</div>';
+                        row.innerHTML = h;
+                        messagesContainer.appendChild(row);
+                    }
+                } catch(e) {}
+                break;
+
             case 'error':
                 showToast('⚠️ ' + msg.content, 'warning', 4000);
                 break;
@@ -495,7 +513,7 @@
             return;
         }
 
-        const msg = { type: 'message', content: content, conversation_id: currentConvID };
+        const msg = { type: 'message', content: content, conversation_id: currentConvID, enable_search: searchEnabled };
         if (uploadedImageURL) {
             msg.image_url = uploadedImageURL;
         }
@@ -727,6 +745,12 @@
         previewImg.src = '';
         imagePreview.style.display = 'none';
         imageInput.value = '';
+    }
+
+    // Search toggle
+    const searchToggleCheckbox = document.getElementById('searchToggleCheckbox');
+    if (searchToggleCheckbox) {
+        searchToggleCheckbox.addEventListener('change', function() { searchEnabled = this.checked; });
     }
 
     // ─── Event Listeners ───────────────────────────────────────

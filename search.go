@@ -292,3 +292,94 @@ func buildSearchPrompt(basePrompt string, results []SearchResult) string {
 	}
 	return sb.String()
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 智谱 GLM-4 Web Search（联网搜索 Pro）
+// ═══════════════════════════════════════════════════════════════
+
+// searchWebZhipu 使用智谱 GLM-4 的 web_search 工具进行联网搜索。
+func searchWebZhipu(query string) ([]SearchResult, string) {
+	apiKey := os.Getenv("SEARCH_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("VISION_API_KEY") // 复用视觉 Key
+	}
+	if apiKey == "" {
+		log.Println("SEARCH_API_KEY 未设置，Zhipu 搜索不可用")
+		return nil, ""
+	}
+
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"model": "glm-4",
+		"messages": []map[string]interface{}{
+			{"role": "user", "content": query},
+		},
+		"tools": []map[string]interface{}{
+			{
+				"type": "web_search",
+				"web_search": map[string]interface{}{
+					"enable": true,
+				},
+			},
+		},
+		"stream": false,
+	})
+
+	httpReq, _ := http.NewRequest("POST", "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+		strings.NewReader(string(reqBody)))
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		log.Printf("Zhipu 搜索 API 不可用: %v", err)
+		return nil, ""
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 32768))
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Zhipu 搜索返回 %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return nil, ""
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		WebSearch []struct {
+			Title   string `json:"title"`
+			Link    string `json:"link"`
+			Snippet string `json:"snippet"`
+			Content string `json:"content"`
+		} `json:"web_search"`
+	}
+
+	if json.Unmarshal(respBody, &result) != nil {
+		return nil, ""
+	}
+
+	var searchResults []SearchResult
+	for _, ws := range result.WebSearch {
+		snippet := ws.Snippet
+		if snippet == "" {
+			snippet = ws.Content
+		}
+		searchResults = append(searchResults, SearchResult{
+			Title:   ws.Title,
+			URL:     ws.Link,
+			Snippet: snippet,
+		})
+	}
+
+	summary := ""
+	if len(result.Choices) > 0 {
+		summary = result.Choices[0].Message.Content
+	}
+
+	log.Printf("Zhipu 搜索: %d 条结果 ← %q", len(searchResults), truncate(query, 40))
+	return searchResults, summary
+}
+

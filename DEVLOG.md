@@ -693,6 +693,15 @@ created_at DATETIME
 - 优先级最高，覆盖本地分析
 **验证：** ✅ 蓝色方块 PNG → GLM-4V 返回"单色图像，均匀蓝色，纯净背景"
 
+### 2026-06-10 — 联网搜索回归（智谱 GLM-4 web_search）
+
+**实现：** 接入智谱 GLM-4 内置 `web_search` 工具，搜索切换按钮回归
+- `searchWebZhipu()` 调用 GLM-4 + `tools: [web_search]`，返回实时搜索结果
+- 搜索结果作为上下文注入 system prompt，AI 基于实时信息回答
+- 前端 🌐 切换按钮 + 搜索来源展示
+- `SEARCH_API_KEY` 环境变量配置（复用 GLM Key）
+**验证：** ✅ "Python最新版本" → GLM-4 搜索返回 "Python 3.15 Beta, 2026年10月发布"
+
 ## 当前功能
 
 - [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）

@@ -394,16 +394,35 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 			})
 			client.Send <- startMsg
 
-			// 3. 加载对话历史（仅用于 DeepSeek 回退）
+		// 3. 联网搜索（通过智谱 GLM-4 web_search 工具）
+		var searchResults []SearchResult
+		var searchSummary string
+		if msg.EnableSearch {
+			searchResults, searchSummary = searchWebZhipu(msg.Content)
+			if searchSummary != "" {
+				// 发送搜索摘要给前端
+				searchMsg, _ := json.Marshal(Message{
+					Type:           "search_results",
+					Content:        toSearchResultsJSON(searchResults),
+					Sender:         "server",
+					Username:       "AI",
+					ConversationID: convID,
+					Timestamp:      time.Now().UTC().Format(time.RFC3339),
+				})
+				client.Send <- searchMsg
+			}
+		}
+
+			// 4. 加载对话历史（仅用于 DeepSeek 回退）
 			history, err := app.conversations.GetHistory(convID)
 			if err != nil {
 				log.Printf("加载会话 %d 历史失败: %v", convID, err)
 				history = nil
 			}
 
-			// 4. 调用 AI 流式生成回复（优先走 OpenClaw 网关，否则直连 DeepSeek）
+			// 5. 调用 AI 流式生成回复（优先走 OpenClaw 网关，否则直连 DeepSeek）
 			var aiContent string
-			err = callOpenClawStream(client.Username, convID, app, msg.Content, msg.ImageURL, history,
+			err = callOpenClawStream(client.Username, convID, app, msg.Content, msg.ImageURL, history, searchResults, searchSummary,
 				// sendChunk: 每个文本块推送给前端
 				func(chunk string) error {
 					aiContent += chunk
