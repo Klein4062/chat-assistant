@@ -90,12 +90,15 @@ func callOpenClawStream(username string, conversationID int64, app *App, userMes
 	// OpenClaw 通过 session 自行维护上下文，无需每次发送完整历史
 	msgContent := userMessage
 	if imageURL != "" {
-		// 调用免费图片识别服务获取描述
+		// 发送识别中提示，防止客户端因等待超时断开
+		sendChunk("🔍 正在识别图片...")
 		desc := describeImage(imageURL)
 		if desc != "" {
 			msgContent = userMessage + "\n\n[用户上传的图片描述：" + desc + "]\n请基于以上图片描述回复用户。"
+			sendChunk(" 完成\n")
 		} else {
 			msgContent = userMessage + "\n\n（用户上传了一张图片，暂时无法识别图片内容。请告知用户。）"
+			sendChunk(" 识别失败，继续文本回复\n")
 		}
 	}
 	messages := []ChatMessage{
