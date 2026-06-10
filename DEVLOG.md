@@ -701,6 +701,7 @@ created_at DATETIME
 - 前端 🌐 切换按钮 + 搜索来源展示
 - `SEARCH_API_KEY` 环境变量配置（复用 GLM Key）
 **验证：** ✅ "Python最新版本" → GLM-4 搜索返回 "Python 3.15 Beta, 2026年10月发布"
+**修复：** 搜索前发 `🔍 正在联网搜索...` 心跳消息，防止 WebSocket 阻塞超时断开
 
 ## 当前功能
 
@@ -719,6 +720,8 @@ created_at DATETIME
 - [x] 用户登录/登出（bcrypt + Session Cookie）
 - [x] 受保护路由（未登录自动跳转登录页）
 - [x] **HTTPS**（fengyin.xin + DigiCert SSL）
+- [x] 🖼️ 图片上传 + GLM-4V AI 识别
+- [x] 🌐 联网搜索（智谱 GLM-4 web_search）
 - [x] 远程 OpenClaw 控制台（SSH 隧道）
 
 - [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）
