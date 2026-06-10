@@ -7,6 +7,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"log"
 	"net/http"
@@ -84,10 +88,15 @@ func callOpenClawStream(username string, conversationID int64, app *App, userMes
 
 	// 组装请求：system prompt + 仅当前消息
 	// OpenClaw 通过 session 自行维护上下文，无需每次发送完整历史
-	// 如有图片：追加提示告知 AI（DeepSeek API 暂不支持多模态识别）
 	msgContent := userMessage
 	if imageURL != "" {
-		msgContent = userMessage + "\n\n（用户上传了一张图片，当前模型暂不支持图片识别。请告知用户你看到了图片消息，但暂时只能处理文字内容。）"
+		// 调用免费图片识别服务获取描述
+		desc := describeImage(imageURL)
+		if desc != "" {
+			msgContent = userMessage + "\n\n[用户上传的图片描述：" + desc + "]\n请基于以上图片描述回复用户。"
+		} else {
+			msgContent = userMessage + "\n\n（用户上传了一张图片，暂时无法识别图片内容。请告知用户。）"
+		}
 	}
 	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
@@ -315,7 +324,212 @@ func callDeepSeekStream(history []ChatMessage, searchResults []SearchResult, sen
 	return nil
 }
 
-// buildMultimodalRequest 构造包含图片的多模态请求 JSON。
+// describeImage 获取图片描述。
+// 优先级：VISION_API_URL 自定义服务 > HuggingFace > 本地基础分析。
+func describeImage(imagePath string) string {
+	data, err := os.ReadFile("." + imagePath)
+	if err != nil {
+		log.Printf("读取图片失败 %s: %v", imagePath, err)
+		return ""
+	}
+
+	// 1. 自定义图片识别 API（通过 VISION_API_URL 环境变量配置）
+	if visionAPIURL := os.Getenv("VISION_API_URL"); visionAPIURL != "" {
+		desc := callVisionAPI(visionAPIURL, data)
+		if desc != "" {
+			return desc
+		}
+	}
+
+	// 2. HuggingFace 免费推理 API
+	desc := callHuggingFaceVision(data)
+	if desc != "" {
+		return desc
+	}
+
+	// 3. 本地基础分析（纯 Go，零依赖）
+	desc = analyzeImageLocal(data)
+	if desc != "" {
+		return desc
+	}
+
+	return ""
+}
+
+// analyzeImageLocal 纯 Go 基础图片分析：尺寸、格式、主色调。
+func analyzeImageLocal(data []byte) string {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return ""
+	}
+
+	// 解码完整图片以分析颜色
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Sprintf("一张 %s 格式图片，尺寸 %dx%d", format, cfg.Width, cfg.Height)
+	}
+
+	// 采样分析主色调
+	bounds := img.Bounds()
+	var totalR, totalG, totalB uint64
+	sampleStep := max(1, (bounds.Dx()*bounds.Dy())/400) // 最多采样约 400 像素
+	count := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += max(1, bounds.Dy()/20) {
+		for x := bounds.Min.X; x < bounds.Max.X; x += max(1, bounds.Dx()/20) {
+			r, g, b, _ := img.At(x, y).RGBA()
+			totalR += uint64(r >> 8)
+			totalG += uint64(g >> 8)
+			totalB += uint64(b >> 8)
+			count++
+		}
+	}
+	_ = sampleStep
+
+	avgR := int(totalR / uint64(count))
+	avgG := int(totalG / uint64(count))
+	avgB := int(totalB / uint64(count))
+
+	// 推测主色调名称
+	colorName := rgbToColorName(avgR, avgG, avgB)
+	brightness := "中等亮度"
+	if avgR+avgG+avgB > 600 {
+		brightness = "偏亮"
+	} else if avgR+avgG+avgB < 200 {
+		brightness = "偏暗"
+	}
+
+	desc := fmt.Sprintf("一张 %s 格式图片，尺寸 %dx%d，主色调为%s（%s）",
+		format, cfg.Width, cfg.Height, colorName, brightness)
+	log.Printf("本地图片分析: %s", desc)
+	return desc
+}
+
+// rgbToColorName 根据 RGB 值推测中文颜色名。
+func rgbToColorName(r, g, b int) string {
+	// 灰度
+	if abs(r-g) < 20 && abs(g-b) < 20 && abs(r-b) < 20 {
+		if r < 40 {
+			return "黑色"
+		} else if r < 100 {
+			return "深灰色"
+		} else if r < 180 {
+			return "灰色"
+		} else if r < 230 {
+			return "浅灰色"
+		}
+		return "白色"
+	}
+	// 彩色
+	switch {
+	case r > g && r > b && r-b > 40:
+		if g > 100 {
+			return "橙红色"
+		}
+		return "红色"
+	case g > r && g > b && g-r > 30:
+		return "绿色"
+	case b > r && b > g && b-r > 30:
+		return "蓝色"
+	case r > 150 && g > 150 && b < 100:
+		return "黄色"
+	case r > 150 && g < 100 && b > 150:
+		return "紫色"
+	case r < 100 && g > 100 && b > 100:
+		return "青色"
+	default:
+		return "混合色调"
+	}
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// callVisionAPI 调用自定义图片识别 API（兼容 OpenAI vision / 自定义格式）。
+func callVisionAPI(apiURL string, imageData []byte) string {
+	b64 := base64.StdEncoding.EncodeToString(imageData)
+	body, _ := json.Marshal(map[string]interface{}{
+		"image":  b64,
+		"format": "png",
+	})
+	resp, err := http.Post(apiURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		log.Printf("自定义 Vision API 不可用: %v", err)
+		return ""
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("自定义 Vision API 返回 %d", resp.StatusCode)
+		return ""
+	}
+	// 尝试解析常见返回格式
+	var result struct {
+		Description string `json:"description"`
+		Caption     string `json:"caption"`
+		Text        string `json:"text"`
+	}
+	if json.Unmarshal(respBody, &result) == nil {
+		desc := result.Description
+		if desc == "" {
+			desc = result.Caption
+		}
+		if desc == "" {
+			desc = result.Text
+		}
+		if desc != "" {
+			log.Printf("自定义 Vision API 成功: %s", truncate(desc, 80))
+			return desc
+		}
+	}
+	// 纯文本返回
+	desc := strings.TrimSpace(string(respBody))
+	if len(desc) > 0 && len(desc) < 500 {
+		log.Printf("Vision API 纯文本: %s", truncate(desc, 80))
+		return desc
+	}
+	return ""
+}
+
+// callHuggingFaceVision 使用 Hugging Face 免费推理 API 识别图片内容。
+func callHuggingFaceVision(imageData []byte) string {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(
+		"https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base",
+		"image/png",
+		bytes.NewReader(imageData),
+	)
+	if err != nil {
+		log.Printf("HuggingFace 不可用: %v", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		msg := string(respBody)
+		if strings.Contains(msg, "loading") || strings.Contains(msg, "currently loading") {
+			log.Printf("HuggingFace 模型冷启动加载中，下次请求可用")
+		} else {
+			log.Printf("HuggingFace 返回 %d: %s", resp.StatusCode, truncate(msg, 100))
+		}
+		return ""
+	}
+
+	var result []struct {
+		GeneratedText string `json:"generated_text"`
+	}
+	if json.Unmarshal(respBody, &result) == nil && len(result) > 0 {
+		log.Printf("图片识别成功(HF): %s", truncate(result[0].GeneratedText, 80))
+		return result[0].GeneratedText
+	}
+	return ""
+}
+
+// buildMultimodalRequest 构造包含图片的多模态请求 JSON（备用，DeepSeek 支持 vision 后启用）。
 // 图片以 base64 data URL 内联，避免外部 URL 无法访问的问题。
 func buildMultimodalRequest(systemPrompt, userMessage, imagePath, model, user string) []byte {
 	// 读取图片并转 base64

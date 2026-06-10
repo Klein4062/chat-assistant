@@ -674,6 +674,17 @@ created_at DATETIME
 - ✅ 刷新页面 → 历史消息中图片依然显示
 - ✅ 无图片消息正常工作，不受影响
 
+### 2026-06-10 — AI 图片识别实现（三层回退）
+
+**实现：** `describeImage()` 三层回退策略：
+1. `VISION_API_URL` 自定义 API（用户可配置任一 vision 服务）
+2. HuggingFace 免费推理 API（`Salesforce/blip-image-captioning-base`）
+3. **纯 Go 本地分析**（零依赖）：解析 PNG/JPEG/GIF 尺寸 + 采样主色调 + 亮度
+
+**本地分析能力：** 图片格式、尺寸、主色调名称（红/绿/蓝/黄/紫/黑白灰等）、亮度评估
+**新增文件：** 无（全部在 `main.go` 中，纯 Go 标准库 `image/png` `image/jpeg` `image/gif`）
+**验证：** ✅ 本地分析 200x100 红色 PNG → "一张 png 格式图片，尺寸 200x100，主色调为红色（中等亮度）"
+
 ## 当前功能
 
 - [x] 多客户端 WebSocket 实时通信（+ 30s Ping 保活）
