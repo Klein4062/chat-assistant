@@ -325,7 +325,7 @@ func callDeepSeekStream(history []ChatMessage, searchResults []SearchResult, sen
 }
 
 // describeImage 获取图片描述。
-// 优先级：VISION_API_URL 自定义服务 > HuggingFace > 本地基础分析。
+// 优先级：VISION_API_KEY(GLM-4V) > VISION_API_URL > HuggingFace > 本地分析。
 func describeImage(imagePath string) string {
 	data, err := os.ReadFile("." + imagePath)
 	if err != nil {
@@ -333,7 +333,15 @@ func describeImage(imagePath string) string {
 		return ""
 	}
 
-	// 1. 自定义图片识别 API（通过 VISION_API_URL 环境变量配置）
+	// 1. GLM-4V 智谱视觉模型（通过 VISION_API_KEY 环境变量配置）
+	if visionAPIKey := os.Getenv("VISION_API_KEY"); visionAPIKey != "" {
+		desc := callGLM4VVision(visionAPIKey, data)
+		if desc != "" {
+			return desc
+		}
+	}
+
+	// 2. 自定义图片识别 API（通过 VISION_API_URL 环境变量配置）
 	if visionAPIURL := os.Getenv("VISION_API_URL"); visionAPIURL != "" {
 		desc := callVisionAPI(visionAPIURL, data)
 		if desc != "" {
@@ -341,16 +349,74 @@ func describeImage(imagePath string) string {
 		}
 	}
 
-	// 2. HuggingFace 免费推理 API
+	// 3. HuggingFace 免费推理 API
 	desc := callHuggingFaceVision(data)
 	if desc != "" {
 		return desc
 	}
 
-	// 3. 本地基础分析（纯 Go，零依赖）
+	// 4. 本地基础分析（纯 Go，零依赖）
 	desc = analyzeImageLocal(data)
 	if desc != "" {
 		return desc
+	}
+
+	return ""
+}
+
+// callGLM4VVision 调用智谱 GLM-4V 视觉模型识别图片。
+func callGLM4VVision(apiKey string, imageData []byte) string {
+	// 检测 MIME 类型
+	mimeType := "image/png"
+	b64 := base64.StdEncoding.EncodeToString(imageData)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "glm-4v",
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "text", "text": "请用一句话描述这张图片的内容，使用中文。"},
+					{"type": "image_url", "image_url": map[string]string{
+						"url": "data:" + mimeType + ";base64," + b64,
+					}},
+				},
+			},
+		},
+		"max_tokens": 100,
+	})
+
+	req, _ := http.NewRequest("POST", "https://open.bigmodel.cn/api/paas/v4/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("GLM-4V API 不可用: %v", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("GLM-4V 返回 %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return ""
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(respBody, &result) == nil && len(result.Choices) > 0 {
+		desc := strings.TrimSpace(result.Choices[0].Message.Content)
+		if desc != "" {
+			log.Printf("GLM-4V 识别成功: %s", truncate(desc, 80))
+			return desc
+		}
 	}
 
 	return ""
