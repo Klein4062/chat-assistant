@@ -645,9 +645,34 @@ created_at DATETIME
 
 ### 2026-06-10 — 图片上传 + AI 多模态识别
 
-**新增：** `POST /api/upload` 图片上传（最大 10MB，PNG/JPEG/GIF/WebP），前端 🖼️ 按钮 + 粘贴 + 拖拽，AI 多模态 vision 识别
-**实现：** `buildMultimodalRequest()` 构造 `[{type:text},{type:image_url}]`，`Message.ImageURL` 传递
-**验证:** ✅ 随机文件名存储 ✅ 登录保护 ✅ 预览/移除 ✅ AI 可识别图片内容
+**新增：** `POST /api/upload` 图片上传（最大 10MB，PNG/JPEG/GIF/WebP），前端 🖼️ 按钮 + 粘贴 + 拖拽
+**实现：** `Message.ImageURL` 传递，图片保存到 `static/uploads/`，公开访问
+⚠️ DeepSeek API 不支持多模态识别，图片仅前端展示，AI 仅接收文本
+**验证:** ✅ 随机文件名存储 ✅ 登录保护 ✅ 预览/移除
+
+### 2026-06-10 — 图片功能修复与完善
+
+**问题诊断：**
+
+| # | 表现 | 根因 |
+|---|------|------|
+| 1 | AI 报错 400 Invalid image_url | DeepSeek `deepseek-chat` 是纯文本模型，不支持多模态 |
+| 2 | 刷新页面后图片消失 | 图片 URL 未持久化到数据库，仅前端临时渲染 |
+| 3 | AI 对图片消息无感知 | 图片 URL 在后端被忽略，未给 AI 任何提示 |
+
+**修复：**
+
+| # | 修复 | 文件 |
+|---|------|------|
+| 1 | 图片消息给 AI 附加提示"用户上传了图片，暂不支持识别" | `main.go` |
+| 2 | 保存消息时 `[image:url]` 标记前缀写入 DB | `handlers.go` |
+| 3 | 加载历史时解析 `[image:url]`，渲染图片气泡 | `app.js` |
+| — | 保留 `buildMultimodalRequest()` 备用（DeepSeek 开放 vision API 后启用） | `main.go` |
+
+**验证结果:**
+- ✅ 上传图片 → 发送消息 → 聊天中显示图片 + AI 回复"看到了图片，暂不支持识别"
+- ✅ 刷新页面 → 历史消息中图片依然显示
+- ✅ 无图片消息正常工作，不受影响
 
 ## 当前功能
 

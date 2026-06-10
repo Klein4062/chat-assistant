@@ -84,10 +84,14 @@ func callOpenClawStream(username string, conversationID int64, app *App, userMes
 
 	// 组装请求：system prompt + 仅当前消息
 	// OpenClaw 通过 session 自行维护上下文，无需每次发送完整历史
-	// 注：DeepSeek API 不支持图片多模态，图片仅在前端展示
+	// 如有图片：追加提示告知 AI（DeepSeek API 暂不支持多模态识别）
+	msgContent := userMessage
+	if imageURL != "" {
+		msgContent = userMessage + "\n\n（用户上传了一张图片，当前模型暂不支持图片识别。请告知用户你看到了图片消息，但暂时只能处理文字内容。）"
+	}
 	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userMessage},
+		{Role: "user", Content: msgContent},
 	}
 	reqBody := ChatCompletionRequest{
 		Model:    "openclaw/default",

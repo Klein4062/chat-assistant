@@ -266,7 +266,15 @@
                         msgs.forEach(m => {
                             const sender = m.role === 'user' ? 'user' : 'server';
                             const name = m.role === 'user' ? currentUsername : 'AI';
-                            addMessageBubble(m.content, sender, name, null);
+                            // 检测 [image:url] 标记，渲染图片气泡
+                            const imgMatch = m.content?.match(/^\[image:(.+?)\]/);
+                            if (imgMatch) {
+                                const imgURL = imgMatch[1];
+                                const text = m.content.slice(imgMatch[0].length);
+                                addImageBubble(text, imgURL, sender, name, null);
+                            } else {
+                                addMessageBubble(m.content, sender, name, null);
+                            }
                         });
                     }
                 }

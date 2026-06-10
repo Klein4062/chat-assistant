@@ -375,8 +375,12 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			// 1. 保存用户消息到数据库
-			if err := app.conversations.AddMessage(convID, "user", msg.Content); err != nil {
+			// 1. 保存用户消息到数据库（含图片标记 [image:url]）
+			saveContent := msg.Content
+			if msg.ImageURL != "" {
+				saveContent = "[image:" + msg.ImageURL + "]" + msg.Content
+			}
+			if err := app.conversations.AddMessage(convID, "user", saveContent); err != nil {
 				log.Printf("保存用户消息失败: %v", err)
 			}
 
