@@ -398,6 +398,16 @@ func (app *App) handleWS(w http.ResponseWriter, r *http.Request) {
 		var searchResults []SearchResult
 		var searchSummary string
 		if msg.EnableSearch {
+			// 发送搜索进度，防止客户端等待超时断开
+			searchProgress, _ := json.Marshal(Message{
+				Type:           "stream_chunk",
+				Content:        "🔍 正在联网搜索...",
+				Sender:         "server",
+				Username:       "AI",
+				ConversationID: convID,
+			})
+			client.Send <- searchProgress
+
 			searchResults, searchSummary = searchWebZhipu(msg.Content)
 			if searchSummary != "" {
 				// 发送搜索摘要给前端
